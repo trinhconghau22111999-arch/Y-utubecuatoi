@@ -7,7 +7,7 @@ APP_BASE_NAME=`basename "$0"`
 APP_HOME=`cd "${APP_HOME:-./}" && pwd -P` || exit
 
 # Add default JVM options here.
-DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+DEFAULT_JVM_OPTS='-Xmx64m -Xms64m'
 
 # Detect script directory
 DIRNAME=`dirname "$0"`
