@@ -885,8 +885,28 @@ class MainActivity : AppCompatActivity() {
                         // giới hạn luôn TỔNG số phần tử con cháu (không chỉ con trực tiếp) - 1 banner
                         // thật sự chỉ gồm vài dòng chữ + icon/nút thì tổng số phần tử con cháu luôn
                         // rất nhỏ, khác hẳn 1 div bao cả mảng lớn của trang.
-                        var totalDescendants = el.querySelectorAll('*').length;
-                        if (el.children && el.children.length < 15 && totalDescendants < 60 && matchesAny(textOf(el), BANNER_TEXT)) {
+                        //
+                        // SUA LOI TIEP (banner van thinh thoang "hien lai"): querySelectorAll('*')
+                        // ở trên đếm luôn cả các thẻ <path>/<g> bên trong icon SVG (logo app, mũi
+                        // tên...) - 1 icon SVG chi tiết có thể chứa hàng chục thẻ <path> khiến tổng
+                        // số đếm được vượt quá ngưỡng 60 dù banner vẫn rất nhỏ trên màn hình, làm
+                        // điều kiện dưới đây fail và banner KHÔNG được ẩn. Sửa bằng cách loại trừ
+                        // toàn bộ nội dung bên trong <svg> khi đếm.
+                        var totalDescendants = el.querySelectorAll('*:not(svg):not(svg *)').length;
+                        // Thêm 1 tín hiệu đáng tin hơn đếm-số-phần-tử: kích thước hiển thị THẬT.
+                        // Một banner "Mở ứng dụng" thật sự không bao giờ cao quá ~40% màn hình -
+                        // nếu el cao hơn mức đó, gần như chắc chắn đây là 1 khối bao lớn của trang
+                        // (false positive) chứ không phải banner nhỏ, dù nó lọt qua 2 điều kiện đếm
+                        // phần tử ở trên.
+                        var fitsBannerSize = true;
+                        try {
+                            var _r = el.getBoundingClientRect();
+                            if (_r.height > 0) {
+                                var _vh = window.innerHeight || document.documentElement.clientHeight || 0;
+                                if (_vh > 0 && _r.height > _vh * 0.4) fitsBannerSize = false;
+                            }
+                        } catch (e) {}
+                        if (el.children && el.children.length < 15 && totalDescendants < 60 && fitsBannerSize && matchesAny(textOf(el), BANNER_TEXT)) {
                             // KHÔNG dùng '[class*="topbar"]' ở đây nữa - selector này thỉnh thoảng
                             // leo lên trúng nguyên cụm thanh trên cùng (chứa cả icon tìm kiếm, menu)
                             // thay vì chỉ đúng cái banner nhỏ "Mở ứng dụng" bên trong, khiến nút tìm
