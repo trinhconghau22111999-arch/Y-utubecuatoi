@@ -956,6 +956,24 @@ class MainActivity : AppCompatActivity() {
                         if (isSearchOrTopbarCore(target)) return; // xem [isSearchOrTopbarCore]
                         target.style.display = 'none';
                     });
+
+                    // Nút "Mở ứng dụng" nằm NGAY TRONG THANH TOPBAR (không phải banner/promo/mealbar
+                    // to như các trường hợp trên) - xử lý RIÊNG, thật HẸP và CHÍNH XÁC bằng cách khớp
+                    // ĐÚNG NGUYÊN VĂN nhãn nút, thay vì nới lỏng isSearchOrTopbarCore() dùng chung cho
+                    // mọi thứ (cách đó từng lỡ ẩn nhầm icon tìm kiếm/cài đặt thật - đã lùi lại). Chỉ ẩn
+                    // ĐÚNG phần tử nút nhỏ này (không leo lên container cha nào), nên dù nó nằm cạnh
+                    // icon tìm kiếm/menu trong cùng thanh topbar cũng không bao giờ kéo theo ẩn mất
+                    // icon bên cạnh. (Không có bước này thì isSearchOrTopbarCore() ở trên vô tình
+                    // bảo vệ luôn CHÍNH nút "Mở ứng dụng" khi nó nằm trong topbar, khiến nút không
+                    // bao giờ bị ẩn được.)
+                    var OPEN_APP_EXACT_LABELS = ['mở ứng dụng', 'mo ung dung', 'open app', 'open the app'];
+                    document.querySelectorAll('button, a, div[role="button"], [role="button"], tp-yt-paper-button, ytm-button-renderer').forEach(function(el) {
+                        if (el.children && el.children.length > 3) return; // chỉ nút nhỏ dạng pill/label, không phải khối lớn
+                        var label = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        if (OPEN_APP_EXACT_LABELS.indexOf(label) !== -1) {
+                            el.style.display = 'none';
+                        }
+                    });
                 }
 
                 var lastSkipRun = 0;
