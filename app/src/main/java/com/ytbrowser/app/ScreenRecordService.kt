@@ -9,7 +9,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.AudioManager
 import android.media.MediaRecorder
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -67,6 +70,11 @@ class ScreenRecordService : Service() {
     private var mediaRecorder: MediaRecorder? = null
     private var isPaused = false
     private var outputPath: String? = null
+
+    // Bộ khử ồn/khử rè cho phiên ghi âm qua mic - xem gắn/gỡ ở startRecording()/
+    // stopRecordingInternal(). Có thể null trên máy không hỗ trợ (isAvailable() = false).
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var automaticGainControl: AutomaticGainControl? = null
 
     // BẮT BUỘC từ Android 14 (API 34): phải registerCallback() cho MediaProjection TRƯỚC khi
     // gọi createVirtualDisplay(), nếu không hệ thống sẽ ném IllegalStateException ngay lập tức
@@ -138,6 +146,13 @@ class ScreenRecordService : Service() {
             this, Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
+        // Tạo sẵn 1 audioSessionId RIÊNG (không để hệ thống tự cấp mặc định) để có thể gắn thêm
+        // NoiseSuppressor/AutomaticGainControl vào ĐÚNG phiên ghi âm này - xem đoạn gắn hiệu ứng
+        // ngay sau prepare() bên dưới, giúp đỡ rè/ù khi ghi qua mic vật lý.
+        val audioSessionId = if (hasAudioPermission) {
+            (getSystemService(AUDIO_SERVICE) as AudioManager).generateAudioSessionId()
+        } else null
+
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             MediaRecorder(this)
         } else {
@@ -160,6 +175,7 @@ class ScreenRecordService : Service() {
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setAudioEncodingBitRate(AUDIO_BIT_RATE)
                 setAudioSamplingRate(AUDIO_SAMPLE_RATE)
+                if (audioSessionId != null) setAudioSessionId(audioSessionId)
             }
             setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             setVideoSize(width, height)
@@ -167,6 +183,24 @@ class ScreenRecordService : Service() {
             setVideoEncodingBitRate(VIDEO_BIT_RATE)
             setOutputFile(outputPath)
             prepare()
+        }
+
+        // Gắn NoiseSuppressor (khử tiếng ồn/rè nền) + AutomaticGainControl (tự cân bằng âm lượng,
+        // tránh vỡ tiếng khi loa phát to) vào đúng audioSessionId vừa gán cho recorder ở trên -
+        // PHẢI làm sau prepare() (lúc đó audio track của phiên ghi mới thật sự tồn tại để hiệu
+        // ứng bám vào), và TRƯỚC start(). Không phải máy nào cũng hỗ trợ (isAvailable() kiểm tra
+        // trước) - bỏ qua êm nếu không có, không làm hỏng luồng ghi hình chính.
+        if (hasAudioPermission && audioSessionId != null) {
+            try {
+                if (NoiseSuppressor.isAvailable()) {
+                    noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply { enabled = true }
+                }
+                if (AutomaticGainControl.isAvailable()) {
+                    automaticGainControl = AutomaticGainControl.create(audioSessionId)?.apply { enabled = true }
+                }
+            } catch (e: Exception) {
+                // Vài máy/OEM có thể ném lỗi lúc tạo hiệu ứng - bỏ qua, không ảnh hưởng ghi hình.
+            }
         }
 
         virtualDisplay = mediaProjection!!.createVirtualDisplay(
@@ -209,6 +243,11 @@ class ScreenRecordService : Service() {
         try { mediaRecorder?.stop() } catch (_: Exception) {}
         mediaRecorder?.release()
         mediaRecorder = null
+
+        noiseSuppressor?.release()
+        noiseSuppressor = null
+        automaticGainControl?.release()
+        automaticGainControl = null
 
         virtualDisplay?.release()
         virtualDisplay = null
