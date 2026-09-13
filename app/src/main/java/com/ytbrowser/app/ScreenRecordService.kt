@@ -4,7 +4,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.ContentValues
 import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -14,7 +13,6 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
-import android.provider.MediaStore
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
@@ -140,20 +138,22 @@ class ScreenRecordService : Service() {
         mediaProjection?.stop()
         mediaProjection = null
 
-        // Thêm file vào thư viện media để Gallery thấy ngay
+        // Mã hoá video vừa quay xong (xem VideoCrypto) rồi XOÁ bản gốc .mp4 - từ giờ trở đi,
+        // không app xem video/quản lý file nào khác mở được nội dung thật bên trong file này
+        // nữa (chỉ app xem riêng - biết trước mật khẩu - mới giải mã lại được). KHÔNG đăng ký
+        // MediaStore cho file .locked này vì nó không còn là video phát trực tiếp được nữa.
         outputPath?.let { path ->
-            val file = File(path)
-            if (file.exists()) {
-                val values = ContentValues().apply {
-                    put(MediaStore.Video.Media.DISPLAY_NAME, file.name)
-                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                    put(MediaStore.Video.Media.DATA, path)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                        put(MediaStore.Video.Media.IS_PENDING, 0)
-                    }
+            val plainFile = File(path)
+            if (plainFile.exists()) {
+                val lockedFile = File(plainFile.parentFile, plainFile.nameWithoutExtension + VideoCrypto.LOCKED_EXTENSION)
+                try {
+                    VideoCrypto.encryptFile(plainFile, lockedFile)
+                    plainFile.delete()
+                } catch (e: Exception) {
+                    // Mã hoá lỗi (vd hết dung lượng) - giữ nguyên file .mp4 gốc thay vì mất trắng,
+                    // xoá bản .locked dở dang (nếu có) để không để lại rác hỏng.
+                    lockedFile.delete()
                 }
-                contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
             }
         }
 
@@ -167,12 +167,11 @@ class ScreenRecordService : Service() {
     }
 
     private fun buildOutputPath(index: Int): String {
-        val dir = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 10+: dùng Downloads thông qua path trực tiếp (service chạy foreground có quyền)
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        } else {
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        }
+        // Video LUÔN nằm trong thư mục con "vdy" bên trong Downloads (không nằm thẳng ở gốc
+        // Downloads nữa) - để gom lại 1 chỗ, tách biệt khỏi các file tải khác, và để app xem
+        // riêng (xemvideoytb1) chỉ cần quét đúng 1 thư mục cố định này.
+        val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val dir = File(downloads, "vdy")
         if (!dir.exists()) dir.mkdirs()
         return File(dir, "y.$index.mp4").absolutePath
     }

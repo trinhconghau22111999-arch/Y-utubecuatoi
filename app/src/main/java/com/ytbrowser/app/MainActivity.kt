@@ -256,7 +256,7 @@ class MainActivity : AppCompatActivity() {
         }
         startForegroundService(intent)
 
-        Toast.makeText(this, "Bắt đầu quay — y.$screenRecordIndex.mp4", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Bắt đầu quay — sẽ lưu vào Downloads/vdy/y.$screenRecordIndex.locked", Toast.LENGTH_SHORT).show()
         screenRecordIndex++
     }
 
@@ -310,7 +310,7 @@ class MainActivity : AppCompatActivity() {
                 webView.evaluateJavascript(
                     "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
                 )
-                Toast.makeText(this@MainActivity, "Đã lưu y.${screenRecordIndex - 1}.mp4", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "Đã lưu Downloads/vdy/y.${screenRecordIndex - 1}.locked (đã mã hoá)", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -493,7 +493,7 @@ class MainActivity : AppCompatActivity() {
                     webView.evaluateJavascript(
                         "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
                     )
-                    Toast.makeText(this@MainActivity, "Quay dừng — đã lưu y.${screenRecordIndex - 1}.mp4", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Quay dừng — đã lưu Downloads/vdy/y.${screenRecordIndex - 1}.locked (đã mã hoá)", Toast.LENGTH_SHORT).show()
                 }
                 fullscreenCallback = null
 
