@@ -161,10 +161,34 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webview)
         progressBar = findViewById(R.id.progressBar)
 
+        // SUA LOI TU XOA/GHI DE VIDEO CU: truoc day screenRecordIndex luon khoi tao = 1 moi lan
+        // app mo lai (process bi he thong kill nen, hoac nguoi dung tu tat/mo lai) - lan quay tiep
+        // theo se ghi ra dung ten "y.1..." da dung truoc do, khi ma hoa se DE THANG len file
+        // "y.1.locked" cu, mat trang video cu ma file moi lai mang dung ten file cu. Quet lai thu
+        // muc Downloads/vdy moi khi mo app, lay so lon nhat dang co roi +1 - dam bao KHONG BAO GIO
+        // trung ten voi file da quay truoc do, du app bi tat/mo lai bao nhieu lan.
+        screenRecordIndex = computeNextRecordIndex()
+
         loadBlocklist()
         setupWebView()
 
         webView.loadUrl(START_URL)
+    }
+
+    // Tim so thu tu tiep theo an toan de dat ten file quay moi: quet toan bo file dang co trong
+    // Downloads/vdy dang "y.<so>.locked" (da ma hoa xong) hoac "y.<so>.mp4" (lo do dang quay/ma
+    // hoa dang do bi ngat) roi lay so LON NHAT + 1. Neu thu muc chua ton tai/rong thi bat dau tu 1.
+    private fun computeNextRecordIndex(): Int {
+        val downloads = android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOWNLOADS
+        )
+        val dir = java.io.File(downloads, "vdy")
+        val files = dir.listFiles() ?: return 1
+        val pattern = Regex("""^y\.(\d+)\.(locked|mp4)$""")
+        val maxIndex = files.mapNotNull { f ->
+            pattern.find(f.name)?.groupValues?.get(1)?.toIntOrNull()
+        }.maxOrNull() ?: 0
+        return maxIndex + 1
     }
 
     // ---- Ô vuông tải xuống, đè cố định lên vị trí nút Cài đặt của trình phát khi toàn màn hình ----
