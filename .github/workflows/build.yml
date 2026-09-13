@@ -36,14 +36,42 @@ jobs:
             echo "BUILD SUCCEEDED"
             find . -name "*.apk"
           else
-            echo "::error::BUILD FAILED - dumping tail of log"
-            LINENO_COUNTER=0
-            tail -n 60 build_output.log > tail_output.txt
-            while IFS= read -r rawline; do
-              LINENO_COUNTER=$((LINENO_COUNTER+1))
-              safe=$(printf '%s' "$rawline" | tr -d '\r' | cut -c1-300)
-              printf '::error::L%03d %s\n' "$LINENO_COUNTER" "$safe"
-            done < tail_output.txt
+            echo "::error::BUILD FAILED"
+
+            print_lines_as_errors() {
+              # In từng dòng thành 1 annotation ::error:: riêng (giới hạn 300 ký tự/dòng) -
+              # dùng chung cho cả 3 phần bên dưới thay vì lặp code.
+              local LINENO_COUNTER=0
+              while IFS= read -r rawline; do
+                LINENO_COUNTER=$((LINENO_COUNTER+1))
+                safe=$(printf '%s' "$rawline" | tr -d '\r' | cut -c1-300)
+                printf '::error::%s\n' "$safe"
+              done
+            }
+
+            # (1) TRƯỚC ĐÂY chỉ tail -n 60 toàn bộ log - với lỗi có stack trace dài, 60 dòng
+            # cuối chỉ toàn là các dòng "at org.gradle...." (frame nội bộ của Gradle), còn đoạn
+            # tóm tắt lỗi thật ("FAILURE: Build failed" + "* What went wrong") nằm PHÍA TRÊN thì
+            # bị cắt mất, phải mở blob storage riêng của GitHub mới xem được - điều này gây khó
+            # chẩn đoán lỗi ngay trong Actions. Giờ in RIÊNG đúng khối "FAILURE: Build failed"
+            # trước tiên (thường chỉ vài chục dòng, đủ ngắn để không bị cắt bởi giới hạn dòng của
+            # annotation).
+            echo "----- FAILURE section -----"
+            awk '/^FAILURE: Build failed/{found=1} found' build_output.log | head -n 60 | print_lines_as_errors
+
+            # (2) Lỗi biên dịch Kotlin/Java thường có dạng "e: file:///path/File.kt:12:5 ..." -
+            # in riêng ra nếu có, vì đây thường là dòng NGẮN GỌN chỉ thẳng vào chỗ sai, hữu ích
+            # hơn nhiều so với stack trace.
+            if grep -q "^e: " build_output.log; then
+              echo "----- Compile errors -----"
+              grep "^e: " build_output.log | head -n 40 | print_lines_as_errors
+            fi
+
+            # (3) Vẫn giữ tail cuối log như cũ để phòng trường hợp lỗi không rơi vào 2 dạng trên
+            # (lỗi không phải do Gradle/Kotlin, vd tải dependency thất bại...).
+            echo "----- Tail of log -----"
+            tail -n 40 build_output.log | print_lines_as_errors
+
             exit 1
           fi
 
