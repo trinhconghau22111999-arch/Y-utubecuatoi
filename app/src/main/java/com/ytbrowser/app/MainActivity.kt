@@ -311,21 +311,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun injectRecordSyncBridge() {
+        // SỬA LỖI (quay màn hình không tự dừng khi video kết thúc): bản trước đây chỉ
+        // querySelector('video') + gắn listener 'ended' ĐÚNG 1 LẦN vào ĐÚNG 1 phần tử <video>
+        // tại thời điểm bắt đầu quay, rồi khoá lại bằng cờ window.__ytbrowser_record_sync
+        // (không bao giờ chạy lại). Có 2 tình huống khiến 'ended' không bao giờ bắn tới nữa:
+        //   1) Lúc bắt đầu quay, thẻ <video> chưa kịp render xong (document.querySelector trả
+        //      về null) -> hàm return sớm nhưng cờ đã bị đánh dấu true -> vĩnh viễn không thử
+        //      gắn lại được nữa dù video xuất hiện ngay sau đó.
+        //   2) YouTube thay THẺ <video> khác (quảng cáo giữa video, đổi chất lượng, chuyển
+        //      sang video tiếp theo...) - listener cũ đã gắn vào phần tử bị gỡ bỏ, phần tử
+        //      <video> MỚI (đang phát thật) không hề có listener nào -> sự kiện 'ended' thật
+        //      sự không được ghi nhận -> service quay không bao giờ nhận lệnh STOP.
+        // Cách sửa: dùng đúng pattern đã áp dụng thành công cho bindVideo() ở WakeLockBridge
+        // phía dưới - hàm bindRecordVideo() được gọi lại định kỳ (setInterval) VÀ mỗi khi DOM
+        // thay đổi (MutationObserver), tự tìm <video> hiện tại và chỉ gắn listener nếu phần tử
+        // ĐÓ chưa từng được gắn (cờ __ytbrowser_record_bound đặt TRÊN CHÍNH phần tử video, không
+        // phải trên window) - nhờ vậy nếu <video> bị thay mới, lần bindRecordVideo() kế tiếp
+        // (chậm nhất 1 giây sau, hoặc ngay khi MutationObserver bắt được) sẽ tự gắn lại đúng
+        // phần tử mới, không phụ thuộc video có tồn tại sẵn lúc bắt đầu quay hay không.
         val js = """
             (function() {
-                if (window.__ytbrowser_record_sync) return;
-                window.__ytbrowser_record_sync = true;
-                var v = document.querySelector('video');
-                if (!v) return;
-                v.addEventListener('pause', function() {
-                    if (window.RecordBridge) RecordBridge.onVideoPause();
-                });
-                v.addEventListener('play', function() {
-                    if (window.RecordBridge) RecordBridge.onVideoResume();
-                });
-                v.addEventListener('ended', function() {
-                    if (window.RecordBridge) RecordBridge.onVideoEnded();
-                });
+                function bindRecordVideo() {
+                    var v = document.querySelector('video');
+                    if (!v) return;
+                    if (v.__ytbrowser_record_bound) return;
+                    v.__ytbrowser_record_bound = true;
+                    v.addEventListener('pause', function() {
+                        if (window.RecordBridge) RecordBridge.onVideoPause();
+                    });
+                    v.addEventListener('play', function() {
+                        if (window.RecordBridge) RecordBridge.onVideoResume();
+                    });
+                    v.addEventListener('ended', function() {
+                        if (window.RecordBridge) RecordBridge.onVideoEnded();
+                    });
+                }
+
+                bindRecordVideo();
+
+                // Chỉ khởi tạo interval + observer 1 LẦN (dùng cờ toàn cục ở đây là hợp lý vì
+                // đây chỉ là "cơ chế theo dõi", không phải bản thân việc gắn listener) - tránh
+                // startScreenRecord() gọi injectRecordSyncBridge() nhiều lần (quay nhiều đoạn
+                // liên tiếp) tạo ra nhiều interval/observer chồng lên nhau.
+                if (!window.__ytbrowser_record_sync) {
+                    window.__ytbrowser_record_sync = true;
+                    setInterval(bindRecordVideo, 1000);
+                    var mo = new MutationObserver(bindRecordVideo);
+                    mo.observe(document.body, { childList: true, subtree: true });
+                }
             })();
         """.trimIndent()
         webView.evaluateJavascript(js, null)
