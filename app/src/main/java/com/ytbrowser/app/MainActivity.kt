@@ -2,12 +2,7 @@ package com.ytbrowser.app
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.AlertDialog
-import android.content.res.Configuration
 import android.media.projection.MediaProjectionManager
-import android.view.MotionEvent
-import android.widget.Button
-import android.widget.LinearLayout
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -142,6 +137,12 @@ class MainActivity : AppCompatActivity() {
 
     private val START_URL = "https://m.youtube.com/"
 
+    // Vị trí/kích thước ô vuông tải xuống (xem addDownloadOverlayButton) - chỉnh 3 số này (dp)
+    // nếu ô vuông chưa đè khớp lên đúng vị trí nút Cài đặt thật trên máy đang dùng.
+    private val DOWNLOAD_BTN_SIZE_DP = 44
+    private val DOWNLOAD_BTN_TOP_DP = 8
+    private val DOWNLOAD_BTN_RIGHT_DP = 48
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -158,63 +159,53 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl(START_URL)
     }
 
-    // Nhận sự kiện chạm trên WebView - phát hiện vuốt 2 ngón xuống khi landscape
-    private var twoFingerStartY = 0f
-    private var twoFingerActive = false
+    // ---- Ô vuông tải xuống, đè cố định lên vị trí nút Cài đặt của trình phát khi toàn màn hình ----
+    // Trước đây tính năng tải video dùng cử chỉ vuốt 2 ngón xuống màn hình khi xoay ngang, nhưng
+    // cử chỉ khó nhớ/khó bấm trúng. Thay bằng 1 ô vuông nhỏ, native Android (KHÔNG phải phần tử
+    // trong WebView), được thêm làm view con CUỐI CÙNG của fullscreenContainer (xem
+    // onShowCustomView bên dưới) nên nó luôn nằm TRÊN CÙNG, chặn đúng vị trí nút Cài đặt (gear)
+    // của trình phát YouTube bên dưới - người dùng bấm vào đó sẽ trúng ô vuông này (kích hoạt tải
+    // luôn, không mở được menu Cài đặt của YouTube nữa) thay vì bấm trúng nút Cài đặt thật.
+    // Ô vuông chỉ tồn tại khi đang toàn màn hình, tự bị gỡ bỏ khi thoát toàn màn hình.
+    //
+    // LƯU Ý VỊ TRÍ: toạ độ nút Cài đặt của YouTube không cố định tuyệt đối giữa các máy/khổ màn
+    // hình (phụ thuộc mật độ điểm ảnh, có thanh cắt tai thỏ hay không...), nên DOWNLOAD_BTN_TOP_DP
+    // và DOWNLOAD_BTN_RIGHT_DP dưới đây là ước lượng ban đầu - nếu ô vuông chưa đè khớp hẳn lên
+    // nút Cài đặt trên máy thật, chỉ cần chỉnh 2 số này (đơn vị dp) rồi build lại.
+    private var downloadOverlayButton: View? = null
 
-    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-            && fullscreenView != null) {
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_POINTER_DOWN -> {
-                    if (ev.pointerCount == 2) {
-                        twoFingerStartY = (ev.getY(0) + ev.getY(1)) / 2f
-                        twoFingerActive = true
-                    }
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (twoFingerActive && ev.pointerCount == 2) {
-                        val currentY = (ev.getY(0) + ev.getY(1)) / 2f
-                        if (currentY - twoFingerStartY > 120f) {
-                            twoFingerActive = false
-                            showScreenRecordDialog()
-                        }
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP,
-                MotionEvent.ACTION_CANCEL -> twoFingerActive = false
-            }
+    private fun addDownloadOverlayButton(container: FrameLayout) {
+        if (downloadOverlayButton != null) return
+        val density = resources.displayMetrics.density
+        val sizePx = (DOWNLOAD_BTN_SIZE_DP * density).toInt()
+        val btn = View(this).apply {
+            // Nền đen mờ để không quá chói, vẫn đủ để người dùng nhận ra có 1 nút ở đó
+            setBackgroundColor(android.graphics.Color.parseColor("#40000000"))
+            contentDescription = "Tải video"
+            setOnClickListener { onDownloadButtonTapped() }
         }
-        return super.dispatchTouchEvent(ev)
+        val params = FrameLayout.LayoutParams(sizePx, sizePx).apply {
+            gravity = android.view.Gravity.TOP or android.view.Gravity.END
+            topMargin = (DOWNLOAD_BTN_TOP_DP * density).toInt()
+            rightMargin = (DOWNLOAD_BTN_RIGHT_DP * density).toInt()
+        }
+        container.addView(btn, params) // thêm SAU CÙNG -> nổi trên cùng, đè lên video/nút cài đặt bên dưới
+        downloadOverlayButton = btn
     }
 
-    private fun showScreenRecordDialog() {
-        if (isRecording) return // đang quay rồi, không hiện lại
-        runOnUiThread {
-            val ctx = this
-            val layout = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(60, 60, 60, 40)
-            }
-            val btn = Button(ctx).apply {
-                text = "⏺  Quay video màn hình (16x)"
-                textSize = 16f
-                setOnClickListener { /* handled below */ }
-            }
-            layout.addView(btn)
+    private fun removeDownloadOverlayButton() {
+        downloadOverlayButton?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        downloadOverlayButton = null
+    }
 
-            val dialog = AlertDialog.Builder(ctx)
-                .setTitle("Lưu video")
-                .setView(layout)
-                .setNegativeButton("Huỷ", null)
-                .create()
-
-            btn.setOnClickListener {
-                dialog.dismiss()
-                requestScreenRecord()
-            }
-            dialog.show()
+    private fun onDownloadButtonTapped() {
+        if (isRecording) {
+            Toast.makeText(this, "Đang quay rồi…", Toast.LENGTH_SHORT).show()
+            return
         }
+        // Bấm là tải luôn - bỏ qua bước hộp thoại xác nhận trước đây, vì bản thân ô vuông
+        // này đã đóng vai trò là "nút bấm để tải".
+        requestScreenRecord()
     }
 
     private fun requestScreenRecord() {
@@ -476,12 +467,18 @@ class MainActivity : AppCompatActivity() {
                 )
                 webView.visibility = View.GONE
 
+                // Thêm SAU CÙNG (khi fullscreenContainer đã có trong decor) để ô vuông tải xuống
+                // nổi trên cùng, đè cố định lên vị trí nút Cài đặt của trình phát - xem
+                // addDownloadOverlayButton() để biết lý do/cách chỉnh vị trí.
+                fullscreenContainer?.let { addDownloadOverlayButton(it) }
+
                 hideSystemUi()
                 // Cho phép người dùng xoay tự do cả dọc lẫn ngang khi đang xem fullscreen
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
             }
 
             override fun onHideCustomView() {
+                removeDownloadOverlayButton()
                 val decor = window.decorView as ViewGroup
                 fullscreenContainer?.let { decor.removeView(it) }
                 fullscreenContainer = null
