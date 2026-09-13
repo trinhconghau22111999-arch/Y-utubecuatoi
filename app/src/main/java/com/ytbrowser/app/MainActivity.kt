@@ -369,6 +369,10 @@ class MainActivity : AppCompatActivity() {
             putExtra(ScreenRecordService.EXTRA_RESULT_CODE, recordResultCode)
             putExtra(ScreenRecordService.EXTRA_RESULT_DATA, data)
             putExtra(ScreenRecordService.EXTRA_FILE_INDEX, screenRecordIndex)
+            // Truyen ten video Youtube hien tai (tieu de trang, dang "Ten video - YouTube")
+            // xuong Service de dat ten file theo dung ten video thay vi "y.<so>" - xem
+            // buildOutputPath()/sanitizeVideoTitleForFileName() trong ScreenRecordService.
+            putExtra(ScreenRecordService.EXTRA_VIDEO_TITLE, webView.title)
         }
         startForegroundService(intent)
 
@@ -579,7 +583,7 @@ class MainActivity : AppCompatActivity() {
                 )
                 // Hiện lại thanh tiến độ sau khi dừng quay
                 injectHideProgressBar(false)
-                Toast.makeText(this@MainActivity, "Đã lưu Downloads/vdy/y.${screenRecordIndex - 1}.locked (đã mã hoá)", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "Đã lưu video vào Downloads/vdy (đã mã hoá)", Toast.LENGTH_LONG).show()
                 // Quay đã dừng - hiện lại nút tải xuống (nếu vẫn đang ở fullscreen) để có thể
                 // bấm quay tiếp, khớp với việc nút đã bị ẩn lúc bắt đầu quay ở startScreenRecord().
                 fullscreenContainer?.let { addDownloadOverlayButton(it) }
@@ -789,7 +793,7 @@ class MainActivity : AppCompatActivity() {
                         "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
                     )
                     injectHideProgressBar(false)
-                    Toast.makeText(this@MainActivity, "Quay dừng — đã lưu Downloads/vdy/y.${screenRecordIndex - 1}.locked (đã mã hoá)", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Quay dừng — đã lưu video vào Downloads/vdy (đã mã hoá)", Toast.LENGTH_SHORT).show()
                 }
                 fullscreenCallback = null
 
