@@ -370,7 +370,13 @@ class MainActivity : AppCompatActivity() {
         }
         startForegroundService(intent)
 
-        Toast.makeText(this, "Bắt đầu quay — sẽ lưu vào Downloads/vdy/y.$screenRecordIndex.locked", Toast.LENGTH_SHORT).show()
+        // THEO YÊU CẦU: không hiện thông báo "Bắt đầu quay..." nữa - thay vào đó ẩn hẳn nút tải
+        // xuống trong lúc đang quay (tự nhiên hơn: nút biến mất = đang quay, nút xuất hiện lại =
+        // quay xong/có thể bấm quay tiếp). Nút được thêm lại trong RecordBridge.onVideoEnded()
+        // khi quay kết thúc TỰ NHIÊN (hết video/đổi video), và không cần thêm lại trong nhánh
+        // dừng quay do người dùng thoát fullscreen ở onHideCustomView() vì lúc đó toàn bộ
+        // fullscreenContainer (kèm nút) đã bị gỡ khỏi màn hình rồi.
+        removeDownloadOverlayButton()
         screenRecordIndex++
     }
 
@@ -541,6 +547,9 @@ class MainActivity : AppCompatActivity() {
                     "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
                 )
                 Toast.makeText(this@MainActivity, "Đã lưu Downloads/vdy/y.${screenRecordIndex - 1}.locked (đã mã hoá)", Toast.LENGTH_LONG).show()
+                // Quay đã dừng - hiện lại nút tải xuống (nếu vẫn đang ở fullscreen) để có thể
+                // bấm quay tiếp, khớp với việc nút đã bị ẩn lúc bắt đầu quay ở startScreenRecord().
+                fullscreenContainer?.let { addDownloadOverlayButton(it) }
             }
         }
     }
