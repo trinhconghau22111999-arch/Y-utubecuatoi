@@ -24,9 +24,17 @@ jobs:
       - name: Build debug APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug 2>&1 | tee build_output.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Show errors if failed
+        if: failure()
+        run: |
+          echo "=== BUILD ERRORS ==="
+          grep -E "error:|Error:|FAILED|Exception|Unresolved|cannot find" build_output.txt | head -50 || cat build_output.txt | tail -80
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
