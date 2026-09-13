@@ -54,6 +54,11 @@ class ScreenRecordService : Service() {
         private const val VIDEO_BIT_RATE = 10_000_000
         private const val VIDEO_FRAME_RATE = 60
         private const val IFRAME_INTERVAL = 2 // giây giữa 2 khung hình khoá (I-frame)
+
+        // Hệ số tốc độ quay: video phát ở 4x, audio capture từ luồng 4x đó.
+        // Khi lưu file: PTS video × 4, PTS audio × 4 → cả hai về 1x → khớp chính xác.
+        // PHẢI khớp với RECORD_SPEED_FACTOR trong MainActivity.
+        const val SPEED_FACTOR = 4
     }
 
     private var mediaProjection: MediaProjection? = null
@@ -330,7 +335,10 @@ class ScreenRecordService : Service() {
             buffer.clear()
             val read = try { ar.read(buffer, buffer.capacity()) } catch (e: Exception) { -1 }
             if (read > 0) {
-                val ptsUs = audioSamplesWritten * 1_000_000L / AUDIO_SAMPLE_RATE
+                // PTS × SPEED_FACTOR: kéo dãn audio về 1x thời gian thực, khớp với video.
+                // Audio capture từ luồng đang phát 4x → 1 giây thu = 4 giây nội dung.
+                // samples / 44100 = thời gian thu thật → × 4 = thời gian nội dung thật → 1x.
+                val ptsUs = audioSamplesWritten * 1_000_000L * SPEED_FACTOR / AUDIO_SAMPLE_RATE
                 audioSamplesWritten += read / (2 * AUDIO_CHANNEL_COUNT) // 2 byte/mẫu (PCM 16-bit)
                 try { codec.queueInputBuffer(index, 0, read, ptsUs, 0) } catch (_: Exception) {}
             } else {
@@ -370,13 +378,22 @@ class ScreenRecordService : Service() {
         }
     }
 
-    // Dịch presentationTimeUs gốc (hệ System.nanoTime()) về mốc 0 tại khung hình đầu tiên, đồng
-    // thời trừ đi tổng thời gian đã tạm dừng cộng dồn - xem giải thích ở khai báo videoBaseTimeNs.
+    // Dịch presentationTimeUs gốc về mốc 0 tại khung hình đầu tiên, trừ thời gian tạm dừng,
+    // rồi nhân × SPEED_FACTOR để kéo dãn duration video trong file về 1x thời gian thực.
+    //
+    // Lý do nhân SPEED_FACTOR:
+    //   Video đang phát ở 4x → Surface nhận frame nhanh 4x nhưng PTS gốc tăng theo
+    //   đồng hồ thật (1x). Nếu không nhân, 1 giây quay chỉ ghi được 1 giây trong file
+    //   nhưng chứa 4 giây nội dung → player phát ra quá nhanh (4x) khi xem lại.
+    //   Nhân × 4 → 1 giây quay = 4 giây trong file = đúng thời lượng nội dung thật → 1x.
+    //
+    // Audio PTS cũng nhân × SPEED_FACTOR (xem audioCodecCallback) → hai track khớp nhau.
     private fun adjustedVideoPtsUs(rawPtsUs: Long): Long {
         val rawNs = rawPtsUs * 1000L
         if (videoBaseTimeNs < 0) videoBaseTimeNs = rawNs
         val adjustedNs = rawNs - videoBaseTimeNs - pausedAccumNs
-        return (if (adjustedNs < 0) 0L else adjustedNs) / 1000L
+        val clampedNs = if (adjustedNs < 0) 0L else adjustedNs
+        return clampedNs * SPEED_FACTOR / 1000L
     }
 
     private fun handleVideoOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {

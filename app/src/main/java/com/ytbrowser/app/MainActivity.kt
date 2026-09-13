@@ -78,11 +78,10 @@ class MainActivity : AppCompatActivity() {
     private var isRecording       = false
     private var recordResultCode  = -1
     private var recordResultData: Intent? = null
-    // Hệ số tốc độ phát khi quay (trước đây 16x, rồi 10x, nay giảm còn 8x - đỡ giật/mất khung
-    // hình hơn ở tốc độ cao trên máy yếu, vẫn rút ngắn thời lượng file đáng kể). PHẢI khớp với
-    // RECORD_SPEED_FACTOR bên app xem (repo xemvideoytb1/PlayerActivity.kt) - đổi số ở đây thì
-    // phải đổi bên đó luôn, nếu không tổng thời lượng + nút tua tới/lui bên app xem sẽ tính sai.
-    private val RECORD_SPEED_FACTOR = 8
+    // Hệ số tốc độ phát khi quay: 4x — video phát 4x, audio capture từ luồng 4x đó.
+    // ScreenRecordService sẽ kéo cả video lẫn audio về 1x khi lưu file (PTS × 4).
+    // PHẢI khớp với ScreenRecordService.SPEED_FACTOR và bên app xem (xemvideoytb1/PlayerActivity.kt).
+    private val RECORD_SPEED_FACTOR = ScreenRecordService.SPEED_FACTOR
 
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -358,6 +357,9 @@ class MainActivity : AppCompatActivity() {
             "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed($RECORD_SPEED_FACTOR); } else { var v=document.querySelector('video'); if(v) v.playbackRate=$RECORD_SPEED_FACTOR; } })();", null
         )
 
+        // Ẩn thanh tiến độ của YouTube player khi quay - tránh nó xuất hiện trên video được ghi
+        injectHideProgressBar(true)
+
         // Inject JS theo dõi video pause/end -> điều khiển recorder
         injectRecordSyncBridge()
 
@@ -378,6 +380,35 @@ class MainActivity : AppCompatActivity() {
         // fullscreenContainer (kèm nút) đã bị gỡ khỏi màn hình rồi.
         removeDownloadOverlayButton()
         screenRecordIndex++
+    }
+
+    // Ẩn (hide=true) hoặc hiện lại (hide=false) thanh tiến độ + controls của YouTube player.
+    // Gọi khi bắt đầu quay để thanh progress không xuất hiện trên video được ghi.
+    // Gọi lại khi dừng quay để trả về giao diện bình thường.
+    private fun injectHideProgressBar(hide: Boolean) {
+        val js = if (hide) """
+            (function() {
+                var id = '__ytbr_rec_style__';
+                var el = document.getElementById(id);
+                if (!el) {
+                    el = document.createElement('style');
+                    el.id = id;
+                    (document.head || document.documentElement).appendChild(el);
+                }
+                el.textContent =
+                    '.ytp-chrome-bottom, .ytp-progress-bar-container, .ytp-chrome-controls,' +
+                    '.ytp-gradient-bottom, .ytp-time-display, .ytp-play-progress,' +
+                    '.ytp-load-progress, .ytp-chapters-container,' +
+                    'ytm-player-overlay-renderer, .slim-video-player-button-view' +
+                    '{ display: none !important; visibility: hidden !important; }';
+            })();
+        """.trimIndent() else """
+            (function() {
+                var el = document.getElementById('__ytbr_rec_style__');
+                if (el) el.textContent = '';
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
     }
 
     private fun injectRecordSyncBridge() {
@@ -546,6 +577,8 @@ class MainActivity : AppCompatActivity() {
                 webView.evaluateJavascript(
                     "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
                 )
+                // Hiện lại thanh tiến độ sau khi dừng quay
+                injectHideProgressBar(false)
                 Toast.makeText(this@MainActivity, "Đã lưu Downloads/vdy/y.${screenRecordIndex - 1}.locked (đã mã hoá)", Toast.LENGTH_LONG).show()
                 // Quay đã dừng - hiện lại nút tải xuống (nếu vẫn đang ở fullscreen) để có thể
                 // bấm quay tiếp, khớp với việc nút đã bị ẩn lúc bắt đầu quay ở startScreenRecord().
@@ -755,6 +788,7 @@ class MainActivity : AppCompatActivity() {
                     webView.evaluateJavascript(
                         "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
                     )
+                    injectHideProgressBar(false)
                     Toast.makeText(this@MainActivity, "Quay dừng — đã lưu Downloads/vdy/y.${screenRecordIndex - 1}.locked (đã mã hoá)", Toast.LENGTH_SHORT).show()
                 }
                 fullscreenCallback = null
