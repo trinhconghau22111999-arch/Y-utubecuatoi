@@ -25,6 +25,11 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Build debug APK
+        env:
+          JAVA_OPTS: ""
+          GRADLE_OPTS: ""
+          JAVA_TOOL_OPTIONS: ""
+          _JAVA_OPTIONS: ""
         run: |
           chmod +x gradlew
           if ./gradlew assembleDebug --stacktrace --warning-mode all > build_output.log 2>&1; then
