@@ -7,6 +7,10 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -142,6 +146,10 @@ class MainActivity : AppCompatActivity() {
     private val DOWNLOAD_BTN_SIZE_DP = 44
     private val DOWNLOAD_BTN_TOP_DP = 8
     private val DOWNLOAD_BTN_RIGHT_DP = 48
+    // Dịch nút sang PHẢI thêm 1 khoảng bằng đúng 1/2 chiều ngang của icon - trừ bớt vào lề phải
+    // gốc (rightMargin nhỏ hơn = nằm gần mép phải hơn = dịch sang phải). Xem cách dùng ở
+    // addDownloadOverlayButton() bên dưới.
+    private val DOWNLOAD_BTN_RIGHT_SHIFT_DP = DOWNLOAD_BTN_SIZE_DP / 2
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -178,16 +186,58 @@ class MainActivity : AppCompatActivity() {
         if (downloadOverlayButton != null) return
         val density = resources.displayMetrics.density
         val sizePx = (DOWNLOAD_BTN_SIZE_DP * density).toInt()
-        val btn = View(this).apply {
-            // Nền đen mờ để không quá chói, vẫn đủ để người dùng nhận ra có 1 nút ở đó
-            setBackgroundColor(android.graphics.Color.parseColor("#40000000"))
+        val btn = object : View(this) {
+            // Cọ vẽ mũi tên (nét liền, đầu/nối tròn cho mượt) và đầu mũi tên (tô đặc) - dùng
+            // chung 1 màu xanh lá, tạo mới trong onDraw() vì kích thước view (để tính toạ độ
+            // theo %) chỉ có thật khi layout xong, không có sẵn lúc khởi tạo.
+            override fun onDraw(canvas: Canvas) {
+                super.onDraw(canvas)
+                val w = width.toFloat()
+                val h = height.toFloat()
+                if (w <= 0f || h <= 0f) return
+                val green = Color.parseColor("#4CAF50")
+                val cx = w / 2f
+
+                val shaftPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = green
+                    style = Paint.Style.STROKE
+                    strokeWidth = w * 0.09f
+                    strokeCap = Paint.Cap.ROUND
+                }
+                // Thân mũi tên: 1 đường thẳng đứng từ trên xuống gần giữa
+                canvas.drawLine(cx, h * 0.20f, cx, h * 0.52f, shaftPaint)
+                // Gạch chân dưới đáy (khay tải xuống) - đặc trưng của icon "download"
+                canvas.drawLine(w * 0.28f, h * 0.80f, w * 0.72f, h * 0.80f, shaftPaint)
+
+                // Đầu mũi tên: hình tam giác tô đặc, chỉa xuống
+                val headPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = green
+                    style = Paint.Style.FILL
+                }
+                val headHalfWidth = w * 0.20f
+                val headTop = h * 0.44f
+                val headTip = h * 0.66f
+                val path = Path().apply {
+                    moveTo(cx - headHalfWidth, headTop)
+                    lineTo(cx + headHalfWidth, headTop)
+                    lineTo(cx, headTip)
+                    close()
+                }
+                canvas.drawPath(path, headPaint)
+            }
+        }.apply {
+            // Nền ĐEN (không còn để mờ như trước) - theo đúng yêu cầu, dễ nhận ra hơn.
+            setBackgroundColor(Color.BLACK)
+            setWillNotDraw(false) // bắt buộc: View trơn mặc định bỏ qua onDraw() để tối ưu
             contentDescription = "Tải video"
             setOnClickListener { onDownloadButtonTapped() }
         }
         val params = FrameLayout.LayoutParams(sizePx, sizePx).apply {
             gravity = android.view.Gravity.TOP or android.view.Gravity.END
             topMargin = (DOWNLOAD_BTN_TOP_DP * density).toInt()
-            rightMargin = (DOWNLOAD_BTN_RIGHT_DP * density).toInt()
+            // Dịch sang phải thêm 1/2 chiều ngang icon so với vị trí gốc (xem
+            // DOWNLOAD_BTN_RIGHT_SHIFT_DP) - rightMargin nhỏ hơn nghĩa là nằm gần mép phải hơn.
+            rightMargin = ((DOWNLOAD_BTN_RIGHT_DP - DOWNLOAD_BTN_RIGHT_SHIFT_DP) * density).toInt()
         }
         container.addView(btn, params) // thêm SAU CÙNG -> nổi trên cùng, đè lên video/nút cài đặt bên dưới
         downloadOverlayButton = btn
