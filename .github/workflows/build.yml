@@ -63,9 +63,18 @@ jobs:
             # in riêng ra nếu có, vì đây thường là dòng NGẮN GỌN chỉ thẳng vào chỗ sai, hữu ích
             # hơn nhiều so với stack trace.
             if grep -q "^e: " build_output.log; then
-              echo "----- Compile errors -----"
+              echo "----- Compile errors (e: ...) -----"
               grep "^e: " build_output.log | head -n 40 | print_lines_as_errors
             fi
+
+            # (2b) Dự phòng thêm - không phải lỗi Kotlin/Java nào cũng bắt đầu bằng "e: " đúng
+            # định dạng trên (tuỳ phiên bản compiler) - in thêm nguyên khối output của TASK bị
+            # fail (vd ":app:compileDebugKotlin FAILED") và mọi dòng chứa "error:" bất kể hoa
+            # thường, để không bỏ sót trường hợp định dạng khác đi.
+            echo "----- Task output block (nếu có) -----"
+            grep -n -i -A 25 "^> Task .*FAILED" build_output.log | head -n 80 | print_lines_as_errors
+            echo "----- Any line containing 'error:' -----"
+            grep -n -i "error:" build_output.log | head -n 40 | print_lines_as_errors
 
             # (3) Vẫn giữ tail cuối log như cũ để phòng trường hợp lỗi không rơi vào 2 dạng trên
             # (lỗi không phải do Gradle/Kotlin, vd tải dependency thất bại...).
