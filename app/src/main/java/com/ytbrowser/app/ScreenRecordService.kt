@@ -38,6 +38,18 @@ class ScreenRecordService : Service() {
     private var isPaused = false
     private var outputPath: String? = null
 
+    // BẮT BUỘC từ Android 14 (API 34): phải registerCallback() cho MediaProjection TRƯỚC khi
+    // gọi createVirtualDisplay(), nếu không hệ thống sẽ ném IllegalStateException ngay lập tức
+    // -> đây chính là nguyên nhân app VĂNG khi bấm quay video trên máy Android 14 trở lên.
+    // Đồng thời onStop() được gọi khi hệ thống/người dùng tự kết thúc phiên chiếu màn hình
+    // (vd bấm "Stop" trên thông báo hệ thống, hoặc thu hồi quyền) - phải dọn dẹp recorder ở
+    // đây, nếu không lần quay sau sẽ dùng phải 1 MediaProjection đã chết -> cũng crash.
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            stopRecordingInternal(fromProjectionCallback = true)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createChannel()
@@ -53,7 +65,7 @@ class ScreenRecordService : Service() {
             }
             ACTION_PAUSE  -> pauseRecording()
             ACTION_RESUME -> resumeRecording()
-            ACTION_STOP   -> stopRecording()
+            ACTION_STOP   -> stopRecordingInternal()
         }
         return START_NOT_STICKY
     }
@@ -69,6 +81,11 @@ class ScreenRecordService : Service() {
 
         val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mpm.getMediaProjection(resultCode, resultData)
+
+        // Đăng ký callback NGAY sau khi có MediaProjection, TRƯỚC createVirtualDisplay() bên
+        // dưới - thứ tự này bắt buộc để không bỏ lỡ thông báo nào (xem giải thích ở khai báo
+        // projectionCallback phía trên).
+        mediaProjection?.registerCallback(projectionCallback, android.os.Handler(mainLooper))
 
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
@@ -127,7 +144,15 @@ class ScreenRecordService : Service() {
         }
     }
 
-    private fun stopRecording() {
+    // fromProjectionCallback = true khi hàm này được gọi NGƯỢC LẠI từ chính onStop() của
+    // MediaProjection (hệ thống/người dùng tự kết thúc phiên chiếu) - lúc đó KHÔNG được gọi lại
+    // mediaProjection.stop()/unregisterCallback() vì phiên đã kết thúc rồi, gọi lại có thể ném
+    // lỗi hoặc vô nghĩa; chỉ cần dọn dẹp recorder/virtualDisplay và mã hoá file.
+    private fun stopRecordingInternal(fromProjectionCallback: Boolean = false) {
+        // Nếu recorder đã được dọn dẹp rồi (vd ACTION_STOP và onStop() cùng gọi tới đây) thì
+        // bỏ qua, tránh mã hoá/xoá file 2 lần.
+        if (mediaRecorder == null && virtualDisplay == null) return
+
         try {
             mediaRecorder?.stop()
         } catch (_: Exception) {}
@@ -135,7 +160,10 @@ class ScreenRecordService : Service() {
         mediaRecorder = null
         virtualDisplay?.release()
         virtualDisplay = null
-        mediaProjection?.stop()
+        if (!fromProjectionCallback) {
+            mediaProjection?.unregisterCallback(projectionCallback)
+            mediaProjection?.stop()
+        }
         mediaProjection = null
 
         // Mã hoá video vừa quay xong (xem VideoCrypto) rồi XOÁ bản gốc .mp4 - từ giờ trở đi,
