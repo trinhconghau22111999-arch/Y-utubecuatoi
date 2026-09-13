@@ -350,11 +350,37 @@ class MainActivity : AppCompatActivity() {
         val data = recordResultData ?: return
         isRecording = true
 
-        // Phát nhanh (RECORD_SPEED_FACTOR, hiện là 8x) qua JS - dùng forceSpeed() để đồng bộ với
-        // biến desiredSpeed trong injectSpeedMemory(), tránh vòng lặp tốc độ ở đó kéo ngược lại
-        // sau này (xem giải thích chi tiết tại khai báo window.__ytbrowser_forceSpeed).
+        // Phát nhanh (RECORD_SPEED_FACTOR) qua JS - dùng forceSpeed() để đồng bộ với biến
+        // desiredSpeed trong injectSpeedMemory(), tránh vòng lặp tốc độ ở đó kéo ngược lại sau
+        // này (xem giải thích chi tiết tại khai báo window.__ytbrowser_forceSpeed).
+        //
+        // QUAN TRỌNG - NGUYÊN NHÂN THẬT SỰ của lỗi "video quay không có tiếng" dù pipeline Android
+        // (AudioPlaybackCaptureConfiguration + MediaCodec + MediaMuxer) đã đúng: mặc định, thẻ
+        // <video> có preservesPitch = true (trình duyệt cố "giữ nguyên cao độ" giọng nói/nhạc khi
+        // tua nhanh, tránh hiệu ứng "chuột chipmunk"). Ở tốc độ cao như $RECORD_SPEED_FACTOR x,
+        // thuật toán giữ cao độ này của WebView/Chromium thường xử lý audio bị lỗi/rè hoặc coi
+        // như không xử lý được nên ÂM THANH RA BỊ CÂM HẲN ở tầng trình duyệt - TRƯỚC KHI âm thanh
+        // đó kịp tới chỗ AudioPlaybackCaptureConfiguration của Android bắt lại, nên phía Android
+        // có sửa gì cũng vô ích (không có gì để bắt). Đặt preservesPitch = false NGAY TRƯỚC khi
+        // tăng tốc: video phát nhanh dạng "tăng tốc thô" (cao độ tăng theo, giọng nghe hơi cao/
+        // nhanh khi xem trực tiếp lúc quay - không sao vì lúc quay không ai nghe, chỉ quan trọng
+        // ÂM THANH VẪN CÒN để ghi lại) thay vì bị câm hẳn.
         webView.evaluateJavascript(
-            "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed($RECORD_SPEED_FACTOR); } else { var v=document.querySelector('video'); if(v) v.playbackRate=$RECORD_SPEED_FACTOR; } })();", null
+            """
+            (function(){
+                var v = document.querySelector('video');
+                if (v) {
+                    v.preservesPitch = false;
+                    v.mozPreservesPitch = false;
+                    v.webkitPreservesPitch = false;
+                }
+                if (window.__ytbrowser_forceSpeed) {
+                    window.__ytbrowser_forceSpeed($RECORD_SPEED_FACTOR);
+                } else if (v) {
+                    v.playbackRate = $RECORD_SPEED_FACTOR;
+                }
+            })();
+            """.trimIndent(), null
         )
 
         // Ẩn thanh tiến độ của YouTube player khi quay - tránh nó xuất hiện trên video được ghi
@@ -1045,7 +1071,24 @@ class MainActivity : AppCompatActivity() {
             action = ScreenRecordService.ACTION_STOP
         })
         webView.evaluateJavascript(
-            "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
+            """
+            (function(){
+                var v = document.querySelector('video');
+                if (v) {
+                    // Trả lại preservesPitch mặc định (true) khi hết quay - chỉ tắt lúc quay ở
+                    // tốc độ cao để giữ được tiếng (xem startScreenRecord()), phát bình thường
+                    // ở 1x không cần và không nên tắt đặc tính này.
+                    v.preservesPitch = true;
+                    v.mozPreservesPitch = true;
+                    v.webkitPreservesPitch = true;
+                }
+                if (window.__ytbrowser_forceSpeed) {
+                    window.__ytbrowser_forceSpeed(1);
+                } else if (v) {
+                    v.playbackRate = 1;
+                }
+            })();
+            """.trimIndent(), null
         )
         injectHideProgressBar(false)
         Toast.makeText(this, toastMessage, if (toastLong) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
