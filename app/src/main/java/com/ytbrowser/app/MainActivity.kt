@@ -571,19 +571,8 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onVideoEnded() {
             if (!isRecording) return
-            isRecording = false
-            startService(Intent(this@MainActivity, ScreenRecordService::class.java).apply {
-                action = ScreenRecordService.ACTION_STOP
-            })
             runOnUiThread {
-                // Trả lại tốc độ 1x - dùng forceSpeed() để desiredSpeed cũng được cập nhật,
-                // tránh bị vòng lặp tốc độ kéo ngược về 10x (xem __ytbrowser_forceSpeed).
-                webView.evaluateJavascript(
-                    "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
-                )
-                // Hiện lại thanh tiến độ sau khi dừng quay
-                injectHideProgressBar(false)
-                Toast.makeText(this@MainActivity, "Đã lưu video vào Downloads/vdy (đã mã hoá)", Toast.LENGTH_LONG).show()
+                stopScreenRecordingAndReset("Đã lưu video vào Downloads/vdy (đã mã hoá)")
                 // Quay đã dừng - hiện lại nút tải xuống (nếu vẫn đang ở fullscreen) để có thể
                 // bấm quay tiếp, khớp với việc nút đã bị ẩn lúc bắt đầu quay ở startScreenRecord().
                 fullscreenContainer?.let { addDownloadOverlayButton(it) }
@@ -785,15 +774,9 @@ class MainActivity : AppCompatActivity() {
                 fullscreenCallback?.onCustomViewHidden()
                 // Nếu đang quay thì dừng và reset tốc độ khi thoát fullscreen
                 if (isRecording) {
-                    isRecording = false
-                    startService(Intent(this@MainActivity, ScreenRecordService::class.java).apply {
-                        action = ScreenRecordService.ACTION_STOP
-                    })
-                    webView.evaluateJavascript(
-                        "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
+                    stopScreenRecordingAndReset(
+                        "Quay dừng — đã lưu video vào Downloads/vdy (đã mã hoá)", toastLong = false
                     )
-                    injectHideProgressBar(false)
-                    Toast.makeText(this@MainActivity, "Quay dừng — đã lưu video vào Downloads/vdy (đã mã hoá)", Toast.LENGTH_SHORT).show()
                 }
                 fullscreenCallback = null
 
@@ -1048,6 +1031,47 @@ class MainActivity : AppCompatActivity() {
             return
         }
         super.onBackPressed()
+    }
+
+    // Dừng quay "cứng" + dọn trạng thái liên quan - dùng chung cho các trường hợp: video kết
+    // thúc tự nhiên (RecordBridge.onVideoEnded), thoát fullscreen khi đang quay
+    // (onHideCustomView), và rời khỏi app khi đang quay (onUserLeaveHint bên dưới) - tránh lặp
+    // lại cùng 1 đoạn code (gọi ACTION_STOP, trả tốc độ về 1x, hiện lại thanh tiến độ, toast) ở
+    // 3 nơi khác nhau như trước đây.
+    private fun stopScreenRecordingAndReset(toastMessage: String, toastLong: Boolean = true) {
+        if (!isRecording) return
+        isRecording = false
+        startService(Intent(this, ScreenRecordService::class.java).apply {
+            action = ScreenRecordService.ACTION_STOP
+        })
+        webView.evaluateJavascript(
+            "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
+        )
+        injectHideProgressBar(false)
+        Toast.makeText(this, toastMessage, if (toastLong) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+    }
+
+    // Gọi CHỈ khi NGƯỜI DÙNG chủ động rời app (bấm Home, hoặc mở "Ứng dụng gần đây"/Overview để
+    // chuyển sang app khác) - KHÔNG gọi khi chỉ tắt màn hình (bấm nguồn) hay khi có hộp thoại hệ
+    // thống hiện lên (xin quyền, thông báo...). Đây là lý do dùng onUserLeaveHint() thay vì
+    // onPause()/onStop() - 2 hàm đó còn bị gọi cả trong các trường hợp KHÔNG thực sự rời app
+    // (xem onPause() bên dưới đã có sẵn cơ chế tự pause/resume 450ms để chống việc này làm gián
+    // đoạn phát video), nếu dùng để dừng quay sẽ dừng NHẦM ngay cả khi người dùng không hề rời
+    // app.
+    //
+    // SỬA LỖI: trước đây MediaProjection quay màn hình dùng cờ AUTO_MIRROR để mirror TOÀN BỘ màn
+    // hình vật lý (không riêng WebView) - khi rời app (về Home/mở app khác) mà không dừng quay,
+    // nội dung quay được sẽ bị đổi SANG màn hình chính/app khác thay vì video YouTube, cho tới
+    // lúc quay lại app mới bấm Dừng thủ công được. Giờ tự động "chốt" (dừng + mã hoá) file NGAY
+    // khi phát hiện rời app, để không quay nhầm sang nội dung không liên quan.
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (isRecording) {
+            stopScreenRecordingAndReset(
+                "Đã tự dừng quay vì rời khỏi ứng dụng — video đã được lưu vào Downloads/vdy (đã mã hoá)"
+            )
+            fullscreenContainer?.let { addDownloadOverlayButton(it) }
+        }
     }
 
     override fun onPause() {
