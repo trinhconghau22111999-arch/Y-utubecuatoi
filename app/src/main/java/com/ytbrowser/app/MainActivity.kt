@@ -78,8 +78,15 @@ class MainActivity : AppCompatActivity() {
     private var isRecording       = false
     private var recordResultCode  = -1
     private var recordResultData: Intent? = null
-    // (Đã bỏ RECORD_SPEED_FACTOR/quay nhanh - xem ghi chú hợp nhất ở đầu ScreenRecordService.kt:
-    // giờ quay ở đúng tốc độ thực 1x, dùng DUY NHẤT MediaRecorder + mic cho mọi phiên bản Android.)
+    // Hệ số tốc độ phát khi quay: 4x - để RÚT NGẮN THỜI GIAN QUAY (video 40 phút chỉ mất ~10
+    // phút để quay xong). KHÔNG kéo giãn PTS về lại 1x khi lưu nữa (khác bản trước) - âm thanh là
+    // dòng mẫu liên tục theo tần số lấy mẫu cố định, không có cách nào "giãn" nó về đúng tốc độ +
+    // đúng cao độ mà không cần xử lý DSP time-stretch riêng (không có sẵn trong Android SDK, phải
+    // nhúng thêm thư viện ngoài) - mọi lần trước cố làm việc này đều ra file bị mất/rè tiếng.
+    // Theo yêu cầu: LƯU LUÔN video+audio ở tốc độ 4x, KHÔNG cố đưa về 1x - vì cả 2 track đều được
+    // MediaRecorder ghi theo CÙNG 1 đồng hồ thời gian thực (video từ Surface, audio từ mic) nên tự
+    // nhiên đã khớp nhau hoàn hảo, không lệch tiếng dù xem lại sẽ nhanh gấp 4 lần (giọng hơi cao).
+    private val RECORD_SPEED_FACTOR = 4
 
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -348,8 +355,34 @@ class MainActivity : AppCompatActivity() {
         val data = recordResultData ?: return
         isRecording = true
 
-        // (Đã bỏ đoạn ép phát nhanh preservesPitch/playbackRate ở đây - xem ghi chú hợp nhất ở
-        // đầu ScreenRecordService.kt: quay ở đúng tốc độ thực 1x, không cần mẹo tua nhanh nữa.)
+        // Phát nhanh (RECORD_SPEED_FACTOR) qua JS - dùng forceSpeed() để đồng bộ với biến
+        // desiredSpeed trong injectSpeedMemory(), tránh vòng lặp tốc độ ở đó kéo ngược lại sau
+        // này (xem giải thích chi tiết tại khai báo window.__ytbrowser_forceSpeed).
+        //
+        // preservesPitch = false: mặc định thẻ <video> cố "giữ nguyên cao độ" giọng nói/nhạc khi
+        // tua nhanh (tránh hiệu ứng "chuột chipmunk"), và ở tốc độ cao như $RECORD_SPEED_FACTOR x,
+        // thuật toán giữ cao độ này của WebView/Chromium thường xử lý audio bị lỗi hoặc coi như
+        // không xử lý được nên ÂM THANH RA BỊ CÂM HẲN ở tầng trình duyệt. Tắt hẳn preservesPitch
+        // NGAY TRƯỚC khi tăng tốc để mic vẫn ghi được tiếng thật (chấp nhận giọng nghe cao/nhanh
+        // hơn khi xem lại - đúng theo yêu cầu: lưu nguyên cả hình lẫn tiếng ở 4x, không cố đưa
+        // ngược về 1x - xem RECORD_SPEED_FACTOR).
+        webView.evaluateJavascript(
+            """
+            (function(){
+                var v = document.querySelector('video');
+                if (v) {
+                    v.preservesPitch = false;
+                    v.mozPreservesPitch = false;
+                    v.webkitPreservesPitch = false;
+                }
+                if (window.__ytbrowser_forceSpeed) {
+                    window.__ytbrowser_forceSpeed($RECORD_SPEED_FACTOR);
+                } else if (v) {
+                    v.playbackRate = $RECORD_SPEED_FACTOR;
+                }
+            })();
+            """.trimIndent(), null
+        )
 
         // Ẩn thanh tiến độ của YouTube player khi quay - tránh nó xuất hiện trên video được ghi
         injectHideProgressBar(true)
@@ -1038,8 +1071,26 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, ScreenRecordService::class.java).apply {
             action = ScreenRecordService.ACTION_STOP
         })
-        // (Đã bỏ đoạn trả preservesPitch/playbackRate về mặc định ở đây - không còn ép tốc độ
-        // lúc bắt đầu quay nữa nên cũng không cần trả lại gì khi dừng.)
+        webView.evaluateJavascript(
+            """
+            (function(){
+                var v = document.querySelector('video');
+                if (v) {
+                    // Trả lại preservesPitch mặc định (true) khi hết quay - chỉ tắt lúc quay ở
+                    // tốc độ cao để giữ được tiếng (xem startScreenRecord()), phát bình thường
+                    // ở 1x không cần và không nên tắt đặc tính này.
+                    v.preservesPitch = true;
+                    v.mozPreservesPitch = true;
+                    v.webkitPreservesPitch = true;
+                }
+                if (window.__ytbrowser_forceSpeed) {
+                    window.__ytbrowser_forceSpeed(1);
+                } else if (v) {
+                    v.playbackRate = 1;
+                }
+            })();
+            """.trimIndent(), null
+        )
         injectHideProgressBar(false)
         Toast.makeText(this, toastMessage, if (toastLong) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
     }
