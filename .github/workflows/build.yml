@@ -24,9 +24,9 @@ jobs:
       - name: Build debug APK
         run: |
           chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace 2>&1 | grep -E "error:|Error |FAILED|warning:|e:.*\.kt" | tail -40
           ./gradlew assembleDebug
-          echo "=== APK files ==="
-          find . -name "*.apk" 2>/dev/null
+          find . -name "*.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -36,11 +36,11 @@ jobs:
           if-no-files-found: warn
 
       - name: Create Release
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: "Build #${{ github.run_number }}"
           files: "**/*.apk"
-          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
