@@ -1,10 +1,12 @@
 package com.ytbrowser.app
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.MediaRecorder
@@ -16,6 +18,7 @@ import android.os.IBinder
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import java.io.File
 
 class ScreenRecordService : Service() {
@@ -105,13 +108,41 @@ class ScreenRecordService : Service() {
             MediaRecorder()
         }
 
+        // Có quyền RECORD_AUDIO hay không quyết định có ghi âm kèm theo hay không - Manifest đã
+        // khai báo quyền này (dùng chung với tính năng tìm kiếm giọng nói), nhưng vẫn kiểm tra
+        // lại ở đây cho chắc (người dùng có thể đã thu hồi quyền trong Cài đặt hệ thống) để
+        // không gọi setAudioSource() rồi prepare() ném lỗi làm cả bản quay (kể cả phần video)
+        // thất bại theo.
+        val hasAudioPermission = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
         mediaRecorder!!.apply {
+            // GHI CHÚ: dùng MediaRecorder.AudioSource.MIC (micro thật của máy) - đây là nguồn âm
+            // thanh DUY NHẤT mà một app thường (không phải app hệ thống) được phép dùng khi ghi
+            // hình qua MediaRecorder. Muốn ghi thẳng đúng âm thanh ĐANG PHÁT ra loa (âm thanh nội
+            // bộ của video, không lẫn tiếng ồn xung quanh) cần quyền CAPTURE_AUDIO_OUTPUT (chỉ
+            // cấp cho app hệ thống) hoặc AudioPlaybackCaptureConfiguration + AudioRecord/MediaCodec
+            // riêng (một pipeline ghi hình hoàn toàn khác, không dùng MediaRecorder nữa) - nằm
+            // ngoài phạm vi sửa đổi này. Nếu máy đang bật loa ngoài đủ to lúc quay, micro vẫn thu
+            // được âm thanh của video.
+            if (hasAudioPermission) {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+            }
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            if (hasAudioPermission) {
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setAudioEncodingBitRate(128_000)
+                setAudioSamplingRate(44_100)
+            }
             setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             setVideoSize(width, height)
-            setVideoFrameRate(30)
-            setVideoEncodingBitRate(6_000_000)
+            // Nâng từ 30fps lên 60fps - mượt hơn khi xem lại, đặc biệt ở các đoạn chuyển động
+            // nhanh (kéo theo tăng bitrate bên dưới để 60fps không bị vỡ khối/mờ nhoè do thiếu
+            // dữ liệu trên mỗi khung hình).
+            setVideoFrameRate(60)
+            setVideoEncodingBitRate(10_000_000)
             setOutputFile(outputPath)
             prepare()
         }

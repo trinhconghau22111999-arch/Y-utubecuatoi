@@ -78,6 +78,11 @@ class MainActivity : AppCompatActivity() {
     private var isRecording       = false
     private var recordResultCode  = -1
     private var recordResultData: Intent? = null
+    // Hệ số tốc độ phát khi quay (trước đây 16x, rồi 10x, nay giảm còn 8x - đỡ giật/mất khung
+    // hình hơn ở tốc độ cao trên máy yếu, vẫn rút ngắn thời lượng file đáng kể). PHẢI khớp với
+    // RECORD_SPEED_FACTOR bên app xem (repo xemvideoytb1/PlayerActivity.kt) - đổi số ở đây thì
+    // phải đổi bên đó luôn, nếu không tổng thời lượng + nút tua tới/lui bên app xem sẽ tính sai.
+    private val RECORD_SPEED_FACTOR = 8
 
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -123,6 +128,25 @@ class MainActivity : AppCompatActivity() {
                 Toast.LENGTH_SHORT
             ).show()
         }
+    }
+
+    // Xin quyền RECORD_AUDIO RIÊNG cho lúc bắt đầu quay màn hình (không dùng chung
+    // micPermissionLauncher ở trên vì launcher đó, khi được cấp quyền, tự mở luôn hộp thoại nhận
+    // dạng giọng nói - không phải điều muốn xảy ra ở đây). Dù người dùng đồng ý hay từ chối, vẫn
+    // tiếp tục xin quyền chiếu màn hình như bình thường ngay sau đó - từ chối chỉ khiến bản quay
+    // không có tiếng (xem hasAudioPermission trong ScreenRecordService), không chặn hẳn tính
+    // năng quay màn hình.
+    private val recordAudioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            Toast.makeText(
+                this,
+                "Không có quyền micro - bản quay sẽ không có tiếng",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        proceedToScreenCapturePermission()
     }
 
     // Danh sách domain cần chặn, đọc từ assets/blocklist.txt
@@ -283,6 +307,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestScreenRecord() {
+        // Xin quyền RECORD_AUDIO TRƯỚC (nếu chưa có) rồi mới tới quyền chiếu màn hình - làm
+        // trước để nếu người dùng đồng ý, ScreenRecordService bắt đầu quay đã có audio ngay từ
+        // giây đầu tiên, không phải xin lại giữa chừng (Android chỉ cho xin 1 quyền/lần). Kiểm
+        // tra mỗi lần bấm quay (không chỉ lần đầu) vì người dùng có thể đã thu hồi quyền trong
+        // Cài đặt hệ thống sau khi từng cấp - nếu đã có quyền rồi thì hàm check trả về true ngay,
+        // không hiện lại hộp thoại xin quyền.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        proceedToScreenCapturePermission()
+    }
+
+    private fun proceedToScreenCapturePermission() {
         if (recordResultData != null) {
             // Đã có quyền từ trước
             startScreenRecord()
@@ -311,11 +351,11 @@ class MainActivity : AppCompatActivity() {
         val data = recordResultData ?: return
         isRecording = true
 
-        // Phát 10x qua JS - dùng forceSpeed() để đồng bộ với biến desiredSpeed trong
-        // injectSpeedMemory(), tránh vòng lặp tốc độ ở đó kéo ngược lại sau này (xem giải
-        // thích chi tiết tại khai báo window.__ytbrowser_forceSpeed).
+        // Phát nhanh (RECORD_SPEED_FACTOR, hiện là 8x) qua JS - dùng forceSpeed() để đồng bộ với
+        // biến desiredSpeed trong injectSpeedMemory(), tránh vòng lặp tốc độ ở đó kéo ngược lại
+        // sau này (xem giải thích chi tiết tại khai báo window.__ytbrowser_forceSpeed).
         webView.evaluateJavascript(
-            "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(10); } else { var v=document.querySelector('video'); if(v) v.playbackRate=10; } })();", null
+            "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed($RECORD_SPEED_FACTOR); } else { var v=document.querySelector('video'); if(v) v.playbackRate=$RECORD_SPEED_FACTOR; } })();", null
         )
 
         // Inject JS theo dõi video pause/end -> điều khiển recorder
@@ -371,15 +411,51 @@ class MainActivity : AppCompatActivity() {
                     });
                 }
 
+                // SỬA LỖI (quay không dừng khi CHUYỂN sang video khác): sự kiện 'ended' ở trên
+                // chỉ bắn khi video HIỆN TẠI phát hết tự nhiên. Khi người dùng tự bấm sang video
+                // khác (hoặc YouTube tự next mà video cũ bị NGẮT/thay <video> giữa chừng thay vì
+                // phát hết), 'ended' không hề bắn -> onVideoEnded() không bao giờ được gọi ->
+                // service quay tiếp tục chạy nền (lúc này ở 1x vì injectSpeedMemory tự trả tốc độ
+                // về 1x khi thấy URL đổi, nhưng KHÔNG hề báo cho phía quay biết). Dò trực tiếp
+                // đường dẫn/tham số video trong URL (giống cách injectSpeedMemory.getVideoKey()
+                // làm) - mỗi khi thấy đổi khác lần trước, coi như video đã kết thúc phiên quay
+                // hiện tại và gọi ĐÚNG hàm RecordBridge.onVideoEnded() để dừng + lưu + trả tốc độ
+                // giống hệt trường hợp video tự hết.
+                function getRecordVideoKey() {
+                    try {
+                        if (window.location.pathname.indexOf('/shorts/') === 0) {
+                            return window.location.pathname;
+                        }
+                        var v = new URLSearchParams(window.location.search).get('v');
+                        return v || window.location.pathname;
+                    } catch (e) {
+                        return window.location.href;
+                    }
+                }
+                if (typeof window.__ytbrowser_record_video_key === 'undefined') {
+                    window.__ytbrowser_record_video_key = getRecordVideoKey();
+                }
+                function checkVideoChangedForRecord() {
+                    var key = getRecordVideoKey();
+                    if (key !== window.__ytbrowser_record_video_key) {
+                        window.__ytbrowser_record_video_key = key;
+                        if (window.RecordBridge) RecordBridge.onVideoEnded();
+                    }
+                }
                 bindRecordVideo();
 
-                // Chỉ khởi tạo interval + observer 1 LẦN (dùng cờ toàn cục ở đây là hợp lý vì
-                // đây chỉ là "cơ chế theo dõi", không phải bản thân việc gắn listener) - tránh
+                // Chỉ khởi tạo listener/interval/observer 1 LẦN (dùng cờ toàn cục ở đây là hợp lý
+                // vì đây chỉ là "cơ chế theo dõi", không phải bản thân việc gắn listener) - tránh
                 // startScreenRecord() gọi injectRecordSyncBridge() nhiều lần (quay nhiều đoạn
-                // liên tiếp) tạo ra nhiều interval/observer chồng lên nhau.
+                // liên tiếp) tạo ra nhiều listener/interval/observer chồng lên nhau, khiến
+                // checkVideoChangedForRecord() bị gọi lặp lại nhiều lần thừa mỗi khi đổi video.
                 if (!window.__ytbrowser_record_sync) {
                     window.__ytbrowser_record_sync = true;
-                    setInterval(bindRecordVideo, 1000);
+                    document.addEventListener('yt-navigate-finish', checkVideoChangedForRecord);
+                    setInterval(function() {
+                        checkVideoChangedForRecord(); // lớp dự phòng nếu yt-navigate-finish không bắn ra
+                        bindRecordVideo();
+                    }, 1000);
                     var mo = new MutationObserver(bindRecordVideo);
                     mo.observe(document.body, { childList: true, subtree: true });
                 }
