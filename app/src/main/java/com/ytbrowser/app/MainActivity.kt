@@ -568,7 +568,27 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
 
-            // Chặn quảng cáo mạng theo domain blocklist ở tầng network request
+            // Chặn quảng cáo mạng theo domain blocklist ở tầng network request.
+            //
+            // SỬA LỖI ("lâu lâu bấm vào video nó không phát"): bản trước đây trả về
+            // WebResourceResponse("text/plain", "utf-8", <rỗng>) cho MỌI domain bị chặn - constructor
+            // 3-tham-số này KHÔNG có statusCode, WebView tự hiểu mặc định là HTTP 200 "thành công"
+            // với nội dung rỗng, chứ KHÔNG phải "request thất bại". Với hầu hết domain quảng cáo/
+            // theo dõi thì vô hại (script quảng cáo rỗng thì chỉ đơn giản không làm gì). NHƯNG domain
+            // "imasdk.googleapis.com" trong blocklist.txt lại là chính SDK quảng cáo (IMA SDK) mà
+            // trình phát YouTube dùng để HỎI XEM video này có quảng cáo hay không TRƯỚC KHI quyết
+            // định phát nội dung chính - khi bị trả lời "200 OK nhưng rỗng" (thay vì một lỗi mạng rõ
+            // ràng), đoạn code chờ phản hồi từ IMA SDK bên trong trình phát có thể hiểu nhầm là
+            // "đang tải phản hồi quảng cáo" và bị TREO vô thời hạn chờ 1 tín hiệu "đã xong" không bao
+            // giờ tới - dẫn tới bấm vào video mà không phát được gì. Đây là lỗi CHẬP CHỜN (không phải
+            // lúc nào cũng xảy ra) vì chỉ những video đáng lẽ có quảng cáo mới đi qua luồng gọi IMA
+            // SDK này; video không có quảng cáo thì không đụng tới luồng này nên vẫn phát bình
+            // thường - đúng khớp với triệu chứng "lâu lâu mới bị, không phải video nào cũng vậy".
+            //
+            // Sửa bằng cách trả về đúng 1 phản hồi THẤT BẠI rõ ràng (HTTP 404) thay vì "200 rỗng" -
+            // buộc code gọi phải rơi vào đúng nhánh xử lý lỗi/catch của chính nó (vốn đã có sẵn để xử
+            // lý khi mất mạng/timeout thật), thay vì bị treo chờ một phản hồi "thành công" không bao
+            // giờ có nội dung hợp lệ.
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest
@@ -578,6 +598,9 @@ class MainActivity : AppCompatActivity() {
                     return WebResourceResponse(
                         "text/plain",
                         "utf-8",
+                        404,
+                        "Blocked",
+                        emptyMap(),
                         ByteArrayInputStream(ByteArray(0))
                     )
                 }
