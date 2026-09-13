@@ -1089,6 +1089,41 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
+                // ---- Phat hien chuyen sang video KHAC de tu dong tra tot do ve 1x ----
+                // YouTube dieu huong giua cac video (bam video lien quan, playlist, tim kiem...)
+                // bang SPA navigation (pushState), KHONG load lai trang, nen onPageFinished ben
+                // Android khong chay lai va tot do cu (desiredSpeed) se bi mang sang video moi
+                // neu khong xu ly. Ham nay nhan dien video hien tai qua id trong URL (?v=... cho
+                // /watch, hoac pathname cho /shorts) - moi khi id doi khac lan truoc, coi la da
+                // chuyen video moi va ep tot do ve 1x tu dau.
+                function getVideoKey() {
+                    try {
+                        if (window.location.pathname.indexOf('/shorts/') === 0) {
+                            return window.location.pathname;
+                        }
+                        var v = new URLSearchParams(window.location.search).get('v');
+                        return v || window.location.pathname;
+                    } catch (e) {
+                        return window.location.href;
+                    }
+                }
+
+                var lastVideoKey = getVideoKey();
+
+                function resetSpeedIfVideoChanged() {
+                    var key = getVideoKey();
+                    if (key !== lastVideoKey) {
+                        lastVideoKey = key;
+                        desiredSpeed = 1;
+                        var video = document.querySelector('video');
+                        if (video) video.playbackRate = 1;
+                    }
+                }
+
+                // yt-navigate-finish: su kien chinh YouTube tu ban ra ngay sau khi dieu huong
+                // SPA xong -> bat duoc thay doi som nhat co the.
+                document.addEventListener('yt-navigate-finish', resetSpeedIfVideoChanged);
+
                 function watchVideo() {
                     var video = document.querySelector('video');
                     if (!video) return;
@@ -1111,6 +1146,7 @@ class MainActivity : AppCompatActivity() {
 
                 watchVideo();
                 setInterval(function() {
+                    resetSpeedIfVideoChanged(); // lop du phong neu yt-navigate-finish khong ban ra
                     watchVideo();
                     applySpeed();
                 }, 1000);
