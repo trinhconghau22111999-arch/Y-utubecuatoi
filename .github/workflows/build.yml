@@ -27,17 +27,38 @@ jobs:
       - name: Build debug APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          set -o pipefail
+          ./gradlew assembleDebug --stacktrace --warning-mode all 2>&1 | tee build_output.log
+          BUILD_EXIT=$?
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "BUILD FAILED with exit code $BUILD_EXIT"
+            echo "---- Emitting error annotations ----"
+            grep -n -iE "error:|error |FAILED|e: |exception" build_output.log | tail -50 | while IFS= read -r line; do
+              clean=$(echo "$line" | sed 's/"/'"'"'/g')
+              echo "::error::${clean:0:400}"
+            done
+            exit $BUILD_EXIT
+          fi
           echo "=== APK path ==="
           find . -name "*.apk"
 
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build_output.log
+          if-no-files-found: warn
+
       - name: Upload artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
 
       - name: Create Release
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
