@@ -246,9 +246,11 @@ class MainActivity : AppCompatActivity() {
         val data = recordResultData ?: return
         isRecording = true
 
-        // Phát 16x qua JS
+        // Phát 16x qua JS - dùng forceSpeed() để đồng bộ với biến desiredSpeed trong
+        // injectSpeedMemory(), tránh vòng lặp tốc độ ở đó kéo ngược lại sau này (xem giải
+        // thích chi tiết tại khai báo window.__ytbrowser_forceSpeed).
         webView.evaluateJavascript(
-            "(function(){ var v=document.querySelector('video'); if(v) v.playbackRate=16; })();", null
+            "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(16); } else { var v=document.querySelector('video'); if(v) v.playbackRate=16; } })();", null
         )
 
         // Inject JS theo dõi video pause/end -> điều khiển recorder
@@ -312,9 +314,10 @@ class MainActivity : AppCompatActivity() {
                 action = ScreenRecordService.ACTION_STOP
             })
             runOnUiThread {
-                // Trả lại tốc độ 1x
+                // Trả lại tốc độ 1x - dùng forceSpeed() để desiredSpeed cũng được cập nhật,
+                // tránh bị vòng lặp tốc độ kéo ngược về 16x (xem __ytbrowser_forceSpeed).
                 webView.evaluateJavascript(
-                    "(function(){ var v=document.querySelector('video'); if(v) v.playbackRate=1; })();", null
+                    "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
                 )
                 Toast.makeText(this@MainActivity, "Đã lưu y.${screenRecordIndex - 1}.mp4", Toast.LENGTH_LONG).show()
             }
@@ -489,7 +492,7 @@ class MainActivity : AppCompatActivity() {
                         action = ScreenRecordService.ACTION_STOP
                     })
                     webView.evaluateJavascript(
-                        "(function(){ var v=document.querySelector('video'); if(v) v.playbackRate=1; })();", null
+                        "(function(){ if (window.__ytbrowser_forceSpeed) { window.__ytbrowser_forceSpeed(1); } else { var v=document.querySelector('video'); if(v) v.playbackRate=1; } })();", null
                     )
                     Toast.makeText(this@MainActivity, "Quay dừng — đã lưu y.${screenRecordIndex - 1}.mp4", Toast.LENGTH_SHORT).show()
                 }
@@ -1062,6 +1065,20 @@ class MainActivity : AppCompatActivity() {
                 window.__ytbrowser_speed_loop = true;
 
                 var desiredSpeed = $savedSpeed;
+
+                // Ham dung chung de Android goi khi can EP tot do (vd: bat/tat quay video 16x) -
+                // QUAN TRONG: phai cap nhat CA desiredSpeed lan video.playbackRate CUNG LUC, neu
+                // khong vong lap applySpeed() ben duoi (chay moi 1 giay) se phat hien lech va tu
+                // dong keo tot do quay VE LAI gia tri desiredSpeed CU trong <1 giay - day chinh la
+                // ly do truoc day sau khi quay xong video, tot do phat KHONG duoc khoi phuc ve 1x
+                // (Android chi set rieng video.playbackRate=1 ma khong biet gi ve desiredSpeed,
+                // trong khi desiredSpeed dang la 16 tu luc bat dau quay do event 'ratechange' tu
+                // gan cap nhat) - vong lap sau do lai ep nguoc ve 16x.
+                window.__ytbrowser_forceSpeed = function(v) {
+                    desiredSpeed = v;
+                    var video = document.querySelector('video');
+                    if (video) video.playbackRate = v;
+                };
 
                 function applySpeed() {
                     var video = document.querySelector('video');
