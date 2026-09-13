@@ -223,7 +223,22 @@ class MainActivity : AppCompatActivity() {
             startScreenRecord()
         } else {
             val mpm = getSystemService(MediaProjectionManager::class.java)
-            mediaProjectionLauncher.launch(mpm.createScreenCaptureIntent())
+            // SUA LOI (tu dung yeu cau quay UNG DUNG KHAC): tu Android 14 (API 34), goi
+            // createScreenCaptureIntent() KHONG THAM SO se khien he thong hien them 1 buoc
+            // moi cho nguoi dung chon "Toan bo man hinh" hay "Mot ung dung" (dung nhu anh
+            // chup nguoi dung phan anh) - neu nguoi dung lo chon nham 1 app khac (vd Chrome),
+            // MediaProjection se CHi quay app do thay vi quay chinh app nay, khien video
+            // quay ra sai/rong. Tu Android 14 tro len, ep thang ve "quay toan man hinh thiet
+            // bi" bang MediaProjectionConfig.createConfigForDefaultDisplay() de bo qua han
+            // buoc chon ung dung nay, giu nguyen hanh vi quay man hinh nhu truoc.
+            val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                mpm.createScreenCaptureIntent(
+                    android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay()
+                )
+            } else {
+                mpm.createScreenCaptureIntent()
+            }
+            mediaProjectionLauncher.launch(captureIntent)
         }
     }
 
