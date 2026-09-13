@@ -42,6 +42,7 @@ class ScreenRecordService : Service() {
         const val EXTRA_RESULT_CODE  = "result_code"
         const val EXTRA_RESULT_DATA  = "result_data"
         const val EXTRA_FILE_INDEX   = "file_index"
+        const val EXTRA_VIDEO_TITLE  = "video_title"
         private const val CHANNEL_ID = "screen_record_channel"
         private const val NOTIF_ID   = 2001
         private const val TAG = "ScreenRecordService"
@@ -125,7 +126,8 @@ class ScreenRecordService : Service() {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA) ?: return START_NOT_STICKY
                 val fileIndex  = intent.getIntExtra(EXTRA_FILE_INDEX, 1)
-                startRecording(resultCode, resultData, fileIndex)
+                val videoTitle = intent.getStringExtra(EXTRA_VIDEO_TITLE)
+                startRecording(resultCode, resultData, fileIndex, videoTitle)
             }
             ACTION_PAUSE  -> pauseRecording()
             ACTION_RESUME -> resumeRecording()
@@ -134,7 +136,7 @@ class ScreenRecordService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startRecording(resultCode: Int, resultData: Intent, fileIndex: Int) {
+    private fun startRecording(resultCode: Int, resultData: Intent, fileIndex: Int, videoTitle: String?) {
         val notif = buildNotification("Đang quay màn hình...")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIF_ID, notif,
@@ -159,8 +161,10 @@ class ScreenRecordService : Service() {
         val height = metrics.heightPixels
         val dpi    = metrics.densityDpi
 
-        // Tên file: y.1, y.2, y.3 ...
-        outputPath = buildOutputPath(fileIndex)
+        // Ten file: uu tien dung TEN VIDEO tren Youtube (vd "Ten video.mp4") - chi roi ve kieu
+        // cu "y.<so>" khi khong lay duoc tieu de hop le (xem sanitizeVideoTitleForFileName/
+        // buildOutputPath ben duoi).
+        outputPath = buildOutputPath(fileIndex, videoTitle)
 
         // Có quyền RECORD_AUDIO hay không quyết định có ghi âm kèm theo hay không - Manifest đã
         // khai báo quyền này (dùng chung với tính năng tìm kiếm giọng nói), nhưng vẫn kiểm tra
@@ -605,14 +609,42 @@ class ScreenRecordService : Service() {
         stopSelf()
     }
 
-    private fun buildOutputPath(index: Int): String {
-        // Video LUÔN nằm trong thư mục con "vdy" bên trong Downloads (không nằm thẳng ở gốc
-        // Downloads nữa) - để gom lại 1 chỗ, tách biệt khỏi các file tải khác, và để app xem
-        // riêng (xemvideoytb1) chỉ cần quét đúng 1 thư mục cố định này.
+    private fun buildOutputPath(index: Int, videoTitle: String?): String {
+        // Video LUON nam trong thu muc con "vdy" ben trong Downloads (khong nam thang o goc
+        // Downloads nua) - de gom lai 1 cho, tach biet khoi cac file tai khac, va de app xem
+        // rieng (xemvideoytb1) chi can quet dung 1 thu muc co dinh nay.
         val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         val dir = File(downloads, "vdy")
         if (!dir.exists()) dir.mkdirs()
-        return File(dir, "y.$index.mp4").absolutePath
+
+        val sanitized = sanitizeVideoTitleForFileName(videoTitle)
+        // Neu khong lay duoc tieu de hop le (trang khong phai video, hoac tieu de rong sau khi
+        // don) thi quay ve kieu ten cu "y.<so>" de luon co 1 ten file hop le.
+        val baseName = sanitized.ifBlank { "y.$index" }
+
+        // Kiem tra trung ten: neu DA co file .mp4/.locked cung ten (vd quay lai chinh video do
+        // lan 2, hoac 2 video trung tieu de), gan them " (index)" phia sau de KHONG BAO GIO ghi
+        // de/mat file cu, dong thoi van giu duoc ten video de sau nay de nhan dien.
+        val candidateBase = if (fileExistsWithBaseName(dir, baseName)) "$baseName ($index)" else baseName
+        return File(dir, "$candidateBase.mp4").absolutePath
+    }
+
+    private fun fileExistsWithBaseName(dir: File, baseName: String): Boolean {
+        return File(dir, "$baseName.mp4").exists() || File(dir, "$baseName${VideoCrypto.LOCKED_EXTENSION}").exists()
+    }
+
+    // Chuyen tieu de trang (webView.title, dang "Ten video - YouTube") thanh ten file hop le tren
+    // he thong file Android: bo hau to " - YouTube", bo cac ky tu KHONG hop le trong ten file
+    // (/ \ : * ? " < > |), gop khoang trang thua, va cat bot neu qua dai (gioi han thuc te cua
+    // hau het he thong file Android la 255 byte ten file - chua du cho phan duoi " (n).mp4"/
+    // .locked va cho viec tieng Viet co dau ma hoa UTF-8 nhieu hon 1 byte/ky tu).
+    private fun sanitizeVideoTitleForFileName(raw: String?): String {
+        if (raw.isNullOrBlank()) return ""
+        var name = raw.trim().removeSuffix(" - YouTube").trim()
+        name = name.replace(Regex("[/\\\\:*?\"<>|]"), " ")
+        name = name.replace(Regex("\\s+"), " ").trim()
+        if (name.length > 100) name = name.substring(0, 100).trim()
+        return name
     }
 
     private fun createChannel() {
