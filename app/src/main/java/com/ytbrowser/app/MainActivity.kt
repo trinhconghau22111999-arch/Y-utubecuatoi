@@ -467,17 +467,17 @@ class MainActivity : AppCompatActivity() {
                 fullscreenContainer = null
                 fullscreenView = null
                 fullscreenCallback?.onCustomViewHidden()
-        // Nếu đang quay thì dừng và reset tốc độ khi thoát fullscreen
-        if (isRecording) {
-            isRecording = false
-            startService(Intent(this, ScreenRecordService::class.java).apply {
-                action = ScreenRecordService.ACTION_STOP
-            })
-            webView.evaluateJavascript(
-                "(function(){ var v=document.querySelector('video'); if(v) v.playbackRate=1; })();", null
-            )
-            Toast.makeText(this, "Quay dừng — đã lưu y.${screenRecordIndex - 1}.mp4", Toast.LENGTH_SHORT).show()
-        }
+                // Nếu đang quay thì dừng và reset tốc độ khi thoát fullscreen
+                if (isRecording) {
+                    isRecording = false
+                    startService(Intent(this@MainActivity, ScreenRecordService::class.java).apply {
+                        action = ScreenRecordService.ACTION_STOP
+                    })
+                    webView.evaluateJavascript(
+                        "(function(){ var v=document.querySelector('video'); if(v) v.playbackRate=1; })();", null
+                    )
+                    Toast.makeText(this@MainActivity, "Quay dừng — đã lưu y.${screenRecordIndex - 1}.mp4", Toast.LENGTH_SHORT).show()
+                }
                 fullscreenCallback = null
 
                 webView.visibility = View.VISIBLE
