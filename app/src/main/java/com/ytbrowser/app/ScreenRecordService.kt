@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.ContentValues
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.MediaRecorder
@@ -64,7 +63,8 @@ class ScreenRecordService : Service() {
     private fun startRecording(resultCode: Int, resultData: Intent, fileIndex: Int) {
         val notif = buildNotification("Đang quay màn hình...")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            startForeground(NOTIF_ID, notif,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else {
             startForeground(NOTIF_ID, notif)
         }
@@ -157,7 +157,12 @@ class ScreenRecordService : Service() {
             }
         }
 
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        @Suppress("DEPRECATION")
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            stopForeground(true)
+        }
         stopSelf()
     }
 
