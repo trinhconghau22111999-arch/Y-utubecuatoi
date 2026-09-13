@@ -873,7 +873,20 @@ class MainActivity : AppCompatActivity() {
                     });
 
                     document.querySelectorAll('div,button,a,ytd-mealbar-promo-renderer,ytm-app-banner-renderer,ytm-topbar-menu-button-renderer').forEach(function(el) {
-                        if (el.children && el.children.length < 15 && matchesAny(textOf(el), BANNER_TEXT)) {
+                        // QUAN TRỌNG: el.innerText lấy text của TOÀN BỘ con cháu bên trong (đệ quy),
+                        // trong khi el.children.length chỉ đếm con TRỰC TIẾP - 1 div bao ngoài rất
+                        // lớn (vd div gốc bọc cả trang) vẫn có thể có rất ít con trực tiếp nhưng bên
+                        // trong sâu lại chứa đúng dòng chữ banner ở đâu đó, khiến nó bị nhận NHẦM là
+                        // banner nhỏ. Khi đó target bị gán sai thành chính div bao lớn này, và vì nó
+                        // thường chứa luôn cả icon tìm kiếm/topbar ở đâu đó bên trong nên
+                        // isSearchOrTopbarCore() (tìm bằng querySelector xuống dưới) lại trả về true,
+                        // khiến hàm bỏ qua không ẩn gì - đây chính là lý do banner "Mở trong ứng
+                        // dụng" không bao giờ bị ẩn thật sự / cứ hiện lại liên tục. Chặn bằng cách
+                        // giới hạn luôn TỔNG số phần tử con cháu (không chỉ con trực tiếp) - 1 banner
+                        // thật sự chỉ gồm vài dòng chữ + icon/nút thì tổng số phần tử con cháu luôn
+                        // rất nhỏ, khác hẳn 1 div bao cả mảng lớn của trang.
+                        var totalDescendants = el.querySelectorAll('*').length;
+                        if (el.children && el.children.length < 15 && totalDescendants < 60 && matchesAny(textOf(el), BANNER_TEXT)) {
                             // KHÔNG dùng '[class*="topbar"]' ở đây nữa - selector này thỉnh thoảng
                             // leo lên trúng nguyên cụm thanh trên cùng (chứa cả icon tìm kiếm, menu)
                             // thay vì chỉ đúng cái banner nhỏ "Mở ứng dụng" bên trong, khiến nút tìm
