@@ -432,15 +432,62 @@ class MainActivity : AppCompatActivity() {
                         return window.location.href;
                     }
                 }
+
+                // SỬA LỖI (quay không dừng khi AUTOPLAY tự chuyển video): cả 'ended' lẫn dò URL ở
+                // trên đều dựa vào việc YouTube "báo" cho biết video đã đổi - qua sự kiện phát hết
+                // thật sự, hoặc qua URL/history cập nhật. Với luồng autoplay tự chuyển sang video kế
+                // tiếp, nhiều khả năng YouTube tráo thẳng <video> sang nội dung mới "êm" (không có
+                // khoảng ngắt rõ ràng) TRƯỚC KHI video cũ chạm mốc kết thúc thật sự - nên 'ended'
+                // không bắn. Cùng lúc đó, việc cập nhật URL/history cho luồng tự chuyển này cũng có
+                // thể không kịp đồng bộ (chạy sau, hoặc bị debounce) - nên dò URL cũng không bắt kịp
+                // ngay tại thời điểm tráo. Cả 2 lớp trên đều PHỤ THUỘC vào YouTube tự nguyện báo hiệu
+                // đúng lúc, nên không đáng tin cậy cho đúng trường hợp autoplay này.
+                //
+                // Thêm 1 tín hiệu KHÔNG phụ thuộc YouTube: video.duration của thẻ <video> hiện tại.
+                // 2 video khác nhau hầu như chắc chắn có duration khác nhau (kể cả khi URL/API nội
+                // bộ chưa hé lộ gì) - nên so sánh duration đọc được ở lần kiểm tra này với duration
+                // đã lưu ở lần trước; nếu khác nhau đáng kể, coi như video đã đổi.
+                // Lưu ý: chỉ so sánh khi CẢ 2 giá trị (cũ và mới) đều là số hữu hạn (isFinite) - vì
+                // ngay sau khi <video> mới gắn vào DOM, duration thường là NaN hoặc Infinity trong
+                // vài chục/vài trăm ms đầu (chưa tải xong metadata); nếu so sánh lúc đó sẽ luôn ra
+                // "khác" (NaN/Infinity !== số cũ) dù video CHƯA CHẮC đã đổi, gây báo sai. Ngưỡng lệch
+                // 1 giây để tránh sai số làm tròn hiếm gặp giữa các lần đọc bị coi nhầm là đổi video,
+                // trong khi 2 video ngẫu nhiên trùng khớp duration đến dưới 1 giây gần như không xảy ra.
+                function getRecordVideoDuration() {
+                    try {
+                        var v = document.querySelector('video');
+                        if (v && isFinite(v.duration) && v.duration > 0) return v.duration;
+                    } catch (e) {}
+                    return NaN;
+                }
                 if (typeof window.__ytbrowser_record_video_key === 'undefined') {
                     window.__ytbrowser_record_video_key = getRecordVideoKey();
                 }
+                if (typeof window.__ytbrowser_record_video_duration === 'undefined') {
+                    window.__ytbrowser_record_video_duration = getRecordVideoDuration();
+                }
                 function checkVideoChangedForRecord() {
+                    var changed = false;
+
                     var key = getRecordVideoKey();
                     if (key !== window.__ytbrowser_record_video_key) {
                         window.__ytbrowser_record_video_key = key;
-                        if (window.RecordBridge) RecordBridge.onVideoEnded();
+                        changed = true;
                     }
+
+                    var duration = getRecordVideoDuration();
+                    if (isFinite(duration)) {
+                        var oldDuration = window.__ytbrowser_record_video_duration;
+                        if (isFinite(oldDuration) && Math.abs(duration - oldDuration) > 1) {
+                            changed = true;
+                        }
+                        // Luôn đồng bộ về giá trị mới nhất đã đọc được (kể cả khi không đổi) để lần
+                        // kiểm tra kế tiếp so sánh đúng với trạng thái hiện tại, không phải trạng thái
+                        // từ rất lâu trước đó.
+                        window.__ytbrowser_record_video_duration = duration;
+                    }
+
+                    if (changed && window.RecordBridge) RecordBridge.onVideoEnded();
                 }
                 bindRecordVideo();
 
