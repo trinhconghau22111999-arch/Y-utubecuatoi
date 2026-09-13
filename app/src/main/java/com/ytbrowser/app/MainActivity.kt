@@ -359,21 +359,23 @@ class MainActivity : AppCompatActivity() {
         // desiredSpeed trong injectSpeedMemory(), tránh vòng lặp tốc độ ở đó kéo ngược lại sau
         // này (xem giải thích chi tiết tại khai báo window.__ytbrowser_forceSpeed).
         //
-        // preservesPitch = false: mặc định thẻ <video> cố "giữ nguyên cao độ" giọng nói/nhạc khi
-        // tua nhanh (tránh hiệu ứng "chuột chipmunk"), và ở tốc độ cao như $RECORD_SPEED_FACTOR x,
-        // thuật toán giữ cao độ này của WebView/Chromium thường xử lý audio bị lỗi hoặc coi như
-        // không xử lý được nên ÂM THANH RA BỊ CÂM HẲN ở tầng trình duyệt. Tắt hẳn preservesPitch
-        // NGAY TRƯỚC khi tăng tốc để mic vẫn ghi được tiếng thật (chấp nhận giọng nghe cao/nhanh
-        // hơn khi xem lại - đúng theo yêu cầu: lưu nguyên cả hình lẫn tiếng ở 4x, không cố đưa
-        // ngược về 1x - xem RECORD_SPEED_FACTOR).
+        // preservesPitch: mặc định thẻ <video> tự "giữ nguyên cao độ" giọng nói/nhạc khi tua
+        // nhanh (chỉ nói nhanh hơn, không đổi giọng) - TRƯỚC ĐÂY từng bị tắt hẳn (preservesPitch
+        // = false) vì ở tốc độ ép rất cao (16x cũ), thuật toán giữ cao độ của WebView/Chromium
+        // xử lý lỗi khiến ÂM THANH CÂM HẲN, nên đành chấp nhận đổi lấy giọng bị đẩy cao độ theo
+        // tốc độ (nghe như "chuột chipmunk") còn hơn mất tiếng. Từ khi hạ RECORD_SPEED_FACTOR
+        // xuống còn 4x (nhẹ hơn nhiều so với 16x cũ), KHÔNG còn tắt preservesPitch nữa - để
+        // trình duyệt tự giữ đúng cao độ giọng gốc, chỉ nói/phát nhanh hơn chứ không còn bị
+        // biến giọng bất thường. Nếu về sau lại gặp tình trạng câm tiếng ở mức 4x này thì mới
+        // cần cân nhắc tắt lại preservesPitch (đánh đổi ngược lại như cũ).
         webView.evaluateJavascript(
             """
             (function(){
                 var v = document.querySelector('video');
                 if (v) {
-                    v.preservesPitch = false;
-                    v.mozPreservesPitch = false;
-                    v.webkitPreservesPitch = false;
+                    v.preservesPitch = true;
+                    v.mozPreservesPitch = true;
+                    v.webkitPreservesPitch = true;
                 }
                 if (window.__ytbrowser_forceSpeed) {
                     window.__ytbrowser_forceSpeed($RECORD_SPEED_FACTOR);
