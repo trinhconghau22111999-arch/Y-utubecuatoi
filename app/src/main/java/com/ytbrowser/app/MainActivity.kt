@@ -78,15 +78,17 @@ class MainActivity : AppCompatActivity() {
     private var isRecording       = false
     private var recordResultCode  = -1
     private var recordResultData: Intent? = null
-    // Hệ số tốc độ phát khi quay: 4x - để RÚT NGẮN THỜI GIAN QUAY (video 40 phút chỉ mất ~10
+    // Hệ số tốc độ phát khi quay: 2x - để RÚT NGẮN THỜI GIAN QUAY (video 40 phút chỉ mất ~20
     // phút để quay xong). KHÔNG kéo giãn PTS về lại 1x khi lưu nữa (khác bản trước) - âm thanh là
     // dòng mẫu liên tục theo tần số lấy mẫu cố định, không có cách nào "giãn" nó về đúng tốc độ +
     // đúng cao độ mà không cần xử lý DSP time-stretch riêng (không có sẵn trong Android SDK, phải
     // nhúng thêm thư viện ngoài) - mọi lần trước cố làm việc này đều ra file bị mất/rè tiếng.
-    // Theo yêu cầu: LƯU LUÔN video+audio ở tốc độ 4x, KHÔNG cố đưa về 1x - vì cả 2 track đều được
+    // Theo yêu cầu: LƯU LUÔN video+audio ở tốc độ 2x, KHÔNG cố đưa về 1x - vì cả 2 track đều được
     // MediaRecorder ghi theo CÙNG 1 đồng hồ thời gian thực (video từ Surface, audio từ mic) nên tự
-    // nhiên đã khớp nhau hoàn hảo, không lệch tiếng dù xem lại sẽ nhanh gấp 4 lần (giọng hơi cao).
-    private val RECORD_SPEED_FACTOR = 4
+    // nhiên đã khớp nhau hoàn hảo, không lệch tiếng dù xem lại sẽ nhanh gấp 2 lần (giọng hơi cao).
+    // Trước đây từng thử 4x - hạ xuống 2x vì tỉ lệ nhẹ hơn nên preservesPitch xử lý pitch
+    // ổn định hơn, đỡ rè/lỗi hơn so với 4x.
+    private val RECORD_SPEED_FACTOR = 2
 
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -364,9 +366,9 @@ class MainActivity : AppCompatActivity() {
         // = false) vì ở tốc độ ép rất cao (16x cũ), thuật toán giữ cao độ của WebView/Chromium
         // xử lý lỗi khiến ÂM THANH CÂM HẲN, nên đành chấp nhận đổi lấy giọng bị đẩy cao độ theo
         // tốc độ (nghe như "chuột chipmunk") còn hơn mất tiếng. Từ khi hạ RECORD_SPEED_FACTOR
-        // xuống còn 4x (nhẹ hơn nhiều so với 16x cũ), KHÔNG còn tắt preservesPitch nữa - để
+        // xuống còn 2x (nhẹ hơn nhiều so với 16x/4x cũ), KHÔNG còn tắt preservesPitch nữa - để
         // trình duyệt tự giữ đúng cao độ giọng gốc, chỉ nói/phát nhanh hơn chứ không còn bị
-        // biến giọng bất thường. Nếu về sau lại gặp tình trạng câm tiếng ở mức 4x này thì mới
+        // biến giọng bất thường. Nếu về sau lại gặp tình trạng câm tiếng ở mức 2x này thì mới
         // cần cân nhắc tắt lại preservesPitch (đánh đổi ngược lại như cũ).
         webView.evaluateJavascript(
             """
