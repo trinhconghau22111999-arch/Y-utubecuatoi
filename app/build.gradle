@@ -1,0 +1,72 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.ytbrowser.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.ytbrowser.app"
+        minSdk 24
+        targetSdk 34
+        // versionCode TỰ TĂNG theo thời điểm build (giây kể từ 1970) thay vì số cố định "1" -
+        // mỗi lần CI build ra APK mới, versionCode LUÔN lớn hơn bản trước, Android mới nhận ra
+        // đây là "bản mới hơn" để cho cài ĐÈ lên bản cũ. Cố định "1" mãi mãi trước đây khiến
+        // Android không phân biệt được bản nào mới hơn - 1 trong 2 lý do bắt buộc phải gỡ cài
+        // lại mỗi lần cập nhật (lý do còn lại là chữ ký - xem signingConfigs bên dưới).
+        def buildVersionCode = (System.currentTimeMillis() / 1000L).toInteger()
+        versionCode buildVersionCode
+        versionName "1.0"
+    }
+
+    // Keystore CỐ ĐỊNH commit sẵn trong repo (keystore/ytbrowser-debug.keystore) - dùng CHUNG
+    // cho MỌI lần build CI, thay vì mỗi máy chủ GitHub Actions tự sinh ngẫu nhiên 1 key debug
+    // riêng (~/.android/debug.keystore chỉ tồn tại tạm trên máy ảo, mất theo khi máy ảo huỷ
+    // sau mỗi lần chạy). Có cùng 1 chữ ký xuyên suốt là điều kiện BẮT BUỘC để Android cho cài
+    // đè APK mới lên bản cũ mà không cần gỡ cài lại trước - khác chữ ký dù chỉ 1 lần, Android
+    // coi như 2 app hoàn toàn khác nhau, luôn bắt gỡ cài lại.
+    signingConfigs {
+        ytbrowser {
+            storeFile file("../keystore/ytbrowser-debug.keystore")
+            storePassword "ytbrowser123"
+            keyAlias "ytbrowser"
+            keyPassword "ytbrowser123"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.ytbrowser
+        }
+        debug {
+            debuggable true
+            // Workflow CI hiện đang build "assembleDebug" - PHẢI gán đúng signingConfig cố định
+            // này cho debug luôn (không phải chỉ release), nếu không debug vẫn tiếp tục dùng key
+            // ngẫu nhiên như cũ, không giải quyết được vấn đề gì cả.
+            signingConfig signingConfigs.ytbrowser
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    buildFeatures {
+        viewBinding false
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.activity:activity-ktx:1.9.0'
+}

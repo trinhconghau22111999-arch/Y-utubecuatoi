@@ -1,0 +1,60 @@
+# Danh sách domain quảng cáo/theo dõi bị CHẶN HẲN ở tầng mạng (shouldInterceptRequest) -
+# request tới các domain này không bao giờ được tải về, nên quảng cáo/tracker không có cơ
+# hội xuất hiện trên trang từ đầu (không phải "ẩn sau khi đã hiện" mà là chặn tận gốc, kể cả
+# loại quảng cáo nằm trong iframe khác domain mà JS trong trang không thể chạm tới để tự bấm
+# "Bỏ qua" được - xem ghi chú trong injectAdSkipAndUiCleanup()).
+# Khớp theo domain CHÍNH XÁC hoặc BẤT KỲ subdomain nào của nó (vd "doubleclick.net" tự chặn
+# luôn "pagead2.doubleclick.net", "static.doubleclick.net"... không cần liệt kê riêng từng cái).
+
+# ---- Hệ sinh thái quảng cáo Google (nguồn chính của toàn bộ quảng cáo trong YouTube,
+#      gồm cả quảng cáo phát trong video LẪN thẻ "Được tài trợ" nằm trong feed/iframe) ----
+doubleclick.net
+googlesyndication.com
+googleadservices.com
+google-analytics.com
+googletagmanager.com
+googletagservices.com
+adservice.google.com
+imasdk.googleapis.com
+app-measurement.com
+googleoptimize.com
+google-analytics.l.google.com
+
+# ---- Mạng quảng cáo/theo dõi bên thứ 3 phổ biến (phòng hờ - một số trang/nội dung nhúng
+#      trong mô tả video, bình luận, hoặc quảng cáo hiển thị qua sàn trao đổi quảng cáo mở
+#      có thể kéo tới các domain này) ----
+amazon-adsystem.com
+adnxs.com
+scorecardresearch.com
+moatads.com
+adsafeprotected.com
+serving-sys.com
+criteo.com
+criteo.net
+taboola.com
+outbrain.com
+media.net
+adroll.com
+rubiconproject.com
+pubmatic.com
+openx.net
+casalemedia.com
+indexexchange.com
+smartadserver.com
+adform.net
+bidswitch.net
+contextweb.com
+yieldmo.com
+sharethrough.com
+teads.tv
+3lift.com
+adsrvr.org
+mathtag.com
+demdex.net
+everesttech.net
+flashtalking.com
+
+# ---- Mạng quảng cáo phổ biến tại Việt Nam ----
+admicro.vn
+adtima.vn
+eclick.vn

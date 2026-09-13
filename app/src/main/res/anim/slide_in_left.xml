@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Activity MỚI (app vừa khởi động lại) trượt vào từ BÊN TRÁI màn hình vào đúng vị trí -
+     dùng cho restartAppFresh() trong MainActivity.kt (thay cho hiệu ứng mặc định của hệ
+     thống là trượt từ phải qua trái). -->
+<translate xmlns:android="http://schemas.android.com/apk/res/android"
+    android:fromXDelta="-100%"
+    android:toXDelta="0%"
+    android:duration="250"
+    android:interpolator="@android:anim/decelerate_interpolator" />

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Activity CŨ (bản trước khi khởi động lại) trượt ra khỏi màn hình về BÊN PHẢI - đi cùng
+     cặp với slide_in_left.xml để tạo hiệu ứng chuyển cảnh "trái qua phải" hoàn chỉnh cho
+     restartAppFresh() trong MainActivity.kt. -->
+<translate xmlns:android="http://schemas.android.com/apk/res/android"
+    android:fromXDelta="0%"
+    android:toXDelta="100%"
+    android:duration="250"
+    android:interpolator="@android:anim/decelerate_interpolator" />
