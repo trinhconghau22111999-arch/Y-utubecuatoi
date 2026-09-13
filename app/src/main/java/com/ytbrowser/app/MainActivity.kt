@@ -374,6 +374,7 @@ class MainActivity : AppCompatActivity() {
         // định nếu không đụng vào thuộc tính này).
 
         webView.addJavascriptInterface(SpeedBridge(), "AndroidSpeed")
+        webView.addJavascriptInterface(QualityBridge(), "AndroidQuality")
         webView.addJavascriptInterface(VoiceBridge(), "AndroidVoice")
         webView.addJavascriptInterface(WakeLockBridge(), "AndroidWakeLock")
         webView.addJavascriptInterface(NavBridge(), "AndroidNav")
@@ -419,6 +420,7 @@ class MainActivity : AppCompatActivity() {
                 progressBar.visibility = View.GONE
                 injectAdSkipAndUiCleanup()
                 injectSpeedMemory()
+                injectQualityMemory()
                 injectVoiceSearchBridge()
                 injectBackgroundPlaybackFix()
                 injectBackgroundColor()
@@ -1142,6 +1144,108 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+
+    // ---- 3b) Ghi nhớ CHẤT LƯỢNG VIDEO người dùng đã chọn & không cho tự đổi ----
+    // YouTube mặc định tự chọn chất lượng theo băng thông hiện có (chế độ "Auto"), và mỗi khi
+    // chuyển sang video KHÁC thì lựa chọn thủ công trước đó cũng bị quên, quay về Auto. Cùng
+    // cách làm như injectSpeedMemory() ở trên: bắt sự kiện người dùng bấm chọn 1 mức chất
+    // lượng cụ thể trong menu Cài đặt, LƯU LẠI lựa chọn đó, rồi liên tục ép áp dụng lại nó lên
+    // player (kể cả khi đổi sang video mới hoặc khi mạng yếu khiến YouTube tự hạ chất lượng).
+    // Nếu người dùng chưa từng chọn gì (vẫn để Auto) thì KHÔNG can thiệp - giữ hành vi mặc định.
+    private fun injectQualityMemory() {
+        val savedQuality = prefs.getString("video_quality", "") ?: ""
+        val js = """
+            (function() {
+                if (window.__ytbrowser_quality_loop) return;
+                window.__ytbrowser_quality_loop = true;
+
+                // '' (rong) nghia la nguoi dung CHUA TUNG chon gi - de nguyen Auto nhu binh
+                // thuong, khong ep gi ca. Chi khi nao co gia tri cu the (vd "hd720") thi moi
+                // bat dau ep.
+                var desiredQuality = "$savedQuality";
+
+                function getPlayer() {
+                    return document.querySelector('#movie_player') ||
+                           document.querySelector('.html5-video-player');
+                }
+
+                // Doi ten hien thi ("1080p", "720p", "Auto", "Tự động"...) sang ten noi bo ma
+                // YouTube player API dung (giong dung ten voi IFrame Player API chinh thuc).
+                var QUALITY_NAME_MAP = {
+                    '2160p':'hd2160','1440p':'hd1440','1080p':'hd1080','720p':'hd720',
+                    '480p':'large','360p':'medium','240p':'small','144p':'tiny'
+                };
+                function normalizeQuality(rawLabel) {
+                    var t = rawLabel.toLowerCase();
+                    if (t.indexOf('auto') !== -1 || t.indexOf('tự động') !== -1 || t.indexOf('tu dong') !== -1) {
+                        return ''; // Auto -> khong ep gi ca, tra lai hanh vi mac dinh
+                    }
+                    var m = t.match(/(\d{3,4})p/);
+                    if (!m) return null;
+                    return QUALITY_NAME_MAP[m[1] + 'p'] || null;
+                }
+
+                function applyQuality() {
+                    if (!desiredQuality) return; // dang o Auto, khong can thiep
+                    var player = getPlayer();
+                    if (!player || typeof player.setPlaybackQuality !== 'function') return;
+                    try {
+                        var current = player.getPlaybackQuality && player.getPlaybackQuality();
+                        if (current !== desiredQuality) {
+                            player.setPlaybackQuality(desiredQuality);
+                            // Mot so phien ban player con co setPlaybackQualityRange - goi
+                            // them de "ghim cung" chat luong nay, chong YouTube tu ha xuong
+                            // khi mang yeu (ABR). Bo qua neu ham khong ton tai.
+                            if (typeof player.setPlaybackQualityRange === 'function') {
+                                try { player.setPlaybackQualityRange(desiredQuality, desiredQuality); } catch (e) {}
+                            }
+                        }
+                    } catch (e) {}
+                }
+
+                // Bat click vao cac muc chon chat luong trong menu Cai dat (banh rang) cua
+                // trinh phat - text hien thi kieu "1080p", "720p60", "Auto", "Tự động"...
+                function hookQualityMenu() {
+                    document.querySelectorAll(
+                        '[role="menuitemradio"], .ytp-menuitem, [class*="quality"] [role="menuitem"], [class*="quality"] button, [class*="quality"] div'
+                    ).forEach(function(el) {
+                        if (el.__ytbrowser_quality_bound) return;
+                        var label = ((el.innerText || el.getAttribute('aria-label') || '') + '').trim();
+                        if (!/(\d{3,4}p|auto|tự động|tu dong)/i.test(label)) return;
+                        el.__ytbrowser_quality_bound = true;
+                        el.addEventListener('click', function() {
+                            var picked = normalizeQuality(label);
+                            if (picked === null) return; // khong nhan dien duoc, bo qua
+                            desiredQuality = picked;
+                            if (window.AndroidQuality) window.AndroidQuality.saveQuality(desiredQuality);
+                            setTimeout(applyQuality, 400);
+                        }, true);
+                    });
+                }
+
+                hookQualityMenu();
+                applyQuality();
+                setInterval(function() {
+                    hookQualityMenu();
+                    applyQuality();
+                }, 1000);
+
+                var mo = new MutationObserver(function() {
+                    hookQualityMenu();
+                    applyQuality();
+                });
+                mo.observe(document.body, { childList: true, subtree: true });
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
+    inner class QualityBridge {
+        @JavascriptInterface
+        fun saveQuality(quality: String) {
+            prefs.edit().putString("video_quality", quality).apply()
+        }
+    }
 
     inner class SpeedBridge {
         @JavascriptInterface        fun saveSpeed(speed: Float) {
