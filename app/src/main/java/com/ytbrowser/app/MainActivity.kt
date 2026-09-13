@@ -1456,6 +1456,27 @@ class MainActivity : AppCompatActivity() {
 
                 var desiredSpeed = $savedSpeed;
 
+                // SUA LOI (toc do quay bi luu nham thanh toc do phat "binh thuong"): forceSpeed()
+                // ben duoi tu dat video.playbackRate = v de EP toc do luc quay (vd 3x) - nhung
+                // chinh viec gan playbackRate cung TU BAN no lam no 'ratechange' y het nhu khi
+                // NGUOI DUNG tu tay bam doi toc do trong menu YouTube, khong co cach nao phan biet
+                // 2 nguon nay tu ban than su kien. Handler 'ratechange' o duoi (trong watchVideo())
+                // truoc day LUU LUON moi lan doi vao SharedPreferences - nghia la MOI LAN BAT DAU
+                // QUAY, toc do quay (vd 3x) se bi luu nham thanh "toc do phat binh thuong". Binh
+                // thuong khi DUNG quay xong, forceSpeed(1) chay lai se ghi de luu lai dung 1x nen
+                // khong lo ra - NHUNG neu app bi he thong kill/crash NGAY TRONG LUC DANG QUAY (dung
+                // tinh huong ma computeNextRecordIndex() da phai phong o onCreate()), buoc "tra ve
+                // 1x" nay khong bao gio chay toi - SharedPreferences ket lai o gia tri toc do quay
+                // (3x), lan mo app sau moi video se tu dong phat nhanh 3x ma khong ro nguyen nhan,
+                // phai tu tay vao menu YouTube doi lai moi het.
+                //
+                // Sua bang 1 co danh dau: forceSpeed() BAT co nay truoc khi gan playbackRate, va
+                // handler 'ratechange' KIEM TRA + TU TAT co nay o buoc dau tien - neu co dang bat
+                // (nghia la thay doi nay la do CHINH APP tu ep, khong phai nguoi dung bam) thi bo
+                // qua khong luu, chi con dung 'ratechange' that su tu thao tac cua nguoi dung moi
+                // duoc luu lai.
+                window.__ytbrowser_forceSpeedInProgress = false;
+
                 // Ham dung chung de Android goi khi can EP tot do (vd: bat/tat quay video 10x) -
                 // QUAN TRONG: phai cap nhat CA desiredSpeed lan video.playbackRate CUNG LUC, neu
                 // khong vong lap applySpeed() ben duoi (chay moi 1 giay) se phat hien lech va tu
@@ -1465,9 +1486,17 @@ class MainActivity : AppCompatActivity() {
                 // trong khi desiredSpeed dang la 10 tu luc bat dau quay do event 'ratechange' tu
                 // gan cap nhat) - vong lap sau do lai ep nguoc ve 10x.
                 window.__ytbrowser_forceSpeed = function(v) {
+                    window.__ytbrowser_forceSpeedInProgress = true;
                     desiredSpeed = v;
                     var video = document.querySelector('video');
                     if (video) video.playbackRate = v;
+                    // Luoi an toan: neu 'ratechange' KHONG bay ra (vd v trung voi playbackRate
+                    // hien tai, mot so trinh duyet bo qua khong bay su kien khi gia tri khong doi),
+                    // co se ket lai o true MAI MAI, khien lan doi toc do THAT tiep theo cua nguoi
+                    // dung bi bo qua nham khong luu. Tu dong tat co sau 50ms bat ke 'ratechange' co
+                    // bay hay khong - du de cho su kien that (thuong bay gan nhu ngay lap tuc) kip
+                    // tu tat co truoc, nhung khong bao gio de co ket lai vinh vien.
+                    setTimeout(function() { window.__ytbrowser_forceSpeedInProgress = false; }, 50);
                 };
 
                 function applySpeed() {
@@ -1519,6 +1548,14 @@ class MainActivity : AppCompatActivity() {
                     video.__ytbrowser_bound = true;
 
                     video.addEventListener('ratechange', function() {
+                        // Thay doi nay la do CHINH APP tu ep (forceSpeed(), vd luc bat dau/ket
+                        // thuc quay) chu khong phai nguoi dung tu bam trong menu YouTube - bo qua,
+                        // KHONG luu lai lam "toc do phat binh thuong" (xem giai thich chi tiet o
+                        // khai bao window.__ytbrowser_forceSpeedInProgress phia tren).
+                        if (window.__ytbrowser_forceSpeedInProgress) {
+                            window.__ytbrowser_forceSpeedInProgress = false;
+                            return;
+                        }
                         // Chi luu lai khi nguoi dung chu dong doi (khong phai do he thong reset ve 1x sau ad)
                         if (video.playbackRate !== 1 || desiredSpeed === 1) {
                             desiredSpeed = video.playbackRate;

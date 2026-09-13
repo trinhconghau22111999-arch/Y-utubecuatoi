@@ -20,14 +20,6 @@ class PlaybackService : Service() {
     companion object {
         private const val CHANNEL_ID = "playback_silent_channel"
         private const val NOTIF_ID = 1001
-        const val ACTION_UPDATE_STATE = "com.ytbrowser.app.action.UPDATE_STATE"
-        const val EXTRA_IS_PLAYING = "extra_is_playing"
-        const val ACTION_CONTROL = "com.ytbrowser.app.action.CONTROL_PLAYBACK"
-        const val EXTRA_COMMAND = "command"
-        const val COMMAND_PLAY = "play"
-        const val COMMAND_PAUSE = "pause"
-        const val COMMAND_SEEK_FORWARD = "seek_forward"
-        const val COMMAND_SEEK_BACKWARD = "seek_backward"
     }
 
     override fun onCreate() {
