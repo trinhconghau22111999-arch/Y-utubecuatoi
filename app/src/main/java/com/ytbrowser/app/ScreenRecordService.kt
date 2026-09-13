@@ -9,28 +9,38 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioPlaybackCaptureConfiguration
-import android.media.AudioRecord
-import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Environment
-import android.os.HandlerThread
 import android.os.IBinder
 import android.util.DisplayMetrics
-import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.io.File
-import java.nio.ByteBuffer
+
+// ---------------------------------------------------------------------------------------------
+// GHI CHÚ HỢP NHẤT (theo yêu cầu "không tách nữa - gộp chung lại, sửa hết logic"): file này
+// TRƯỚC ĐÂY có 2 đường ghi hình tách biệt:
+//   (1) MediaRecorder + mic vật lý - chỉ dùng cho Android < 10.
+//   (2) Tự dựng pipeline riêng bằng MediaCodec + AudioRecord (bắt thẳng âm thanh app qua
+//       AudioPlaybackCaptureConfiguration, không qua mic) + MediaMuxer - dùng cho Android 10+,
+//       kèm cơ chế quay nhanh 4x rồi kéo giãn PTS video/audio về lại 1x lúc lưu file.
+// Đường (2) phức tạp hơn nhiều lần và dù đã thử sửa (thêm allowAudioPlaybackCapture=true vào
+// Manifest, tắt preservesPitch khi tăng tốc...) vẫn không ra được tiếng thật trên máy - nhiều khả
+// năng âm thanh phát ra từ thẻ <video> bên trong WebView không được hệ thống quy về đúng "app đang
+// phát" theo cách AudioPlaybackCaptureConfiguration yêu cầu, hoặc bị 1 tầng nào đó (WebView/OEM)
+// âm thầm chặn mà code phía app không có cách nào kiểm soát hay thấy lỗi rõ ràng.
+//
+// GỘP LẠI về DUY NHẤT 1 đường ghi bằng MediaRecorder + MIC (nguồn VOICE_RECOGNITION để có sẵn
+// khử ồn/AGC từ driver âm thanh máy, đỡ rè hơn MIC thô) cho MỌI phiên bản Android - đơn giản, ít
+// chỗ có thể hỏng hơn hẳn, và CHẮC CHẮN ra được tiếng thật (đánh đổi duy nhất: mic có thể bắt thêm
+// chút tiếng ồn môi trường xung quanh so với bắt thẳng audio nội bộ nếu đường (2) hoạt động đúng).
+// Đồng thời bỏ luôn cơ chế quay nhanh 4x (quay lại đúng tốc độ thực 1x) vì mẹo "kéo PTS về 1x" chỉ
+// áp dụng được với pipeline muxer thủ công đã bỏ - bỏ luôn để không còn logic nửa vời.
+// ---------------------------------------------------------------------------------------------
 
 class ScreenRecordService : Service() {
 
@@ -45,63 +55,18 @@ class ScreenRecordService : Service() {
         const val EXTRA_VIDEO_TITLE  = "video_title"
         private const val CHANNEL_ID = "screen_record_channel"
         private const val NOTIF_ID   = 2001
-        private const val TAG = "ScreenRecordService"
 
         private const val AUDIO_SAMPLE_RATE = 44_100
-        // Mono: đủ dùng cho quay màn hình (âm thanh video YouTube phần lớn cũng không phải stereo
-        // thật sự phong phú), giảm băng thông/kích thước file so với stereo.
-        private const val AUDIO_CHANNEL_COUNT = 1
         private const val AUDIO_BIT_RATE = 128_000
         private const val VIDEO_BIT_RATE = 10_000_000
         private const val VIDEO_FRAME_RATE = 60
-        private const val IFRAME_INTERVAL = 2 // giây giữa 2 khung hình khoá (I-frame)
-
-        // Hệ số tốc độ quay: video phát ở 4x, audio capture từ luồng 4x đó.
-        // Khi lưu file: PTS video × 4, PTS audio × 4 → cả hai về 1x → khớp chính xác.
-        // PHẢI khớp với RECORD_SPEED_FACTOR trong MainActivity.
-        const val SPEED_FACTOR = 4
     }
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
+    private var mediaRecorder: MediaRecorder? = null
     private var isPaused = false
     private var outputPath: String? = null
-
-    // --- Đường ghi CŨ (MediaRecorder + micro) - CHỈ còn dùng làm phương án dự phòng trên Android
-    // thấp hơn API 29 (Android 10), nơi KHÔNG có AudioPlaybackCaptureConfiguration nên buộc phải
-    // ghi âm thanh qua micro vật lý (xem giải thích ở startInternalPipeline() bên dưới). ---
-    private var mediaRecorder: MediaRecorder? = null
-
-    // --- Đường ghi MỚI (API 29+): ghi THẲNG âm thanh app đang phát ra (không qua micro/loa vật
-    // lý) bằng AudioPlaybackCaptureConfiguration - xem startInternalPipeline(). MediaRecorder
-    // không hỗ trợ nguồn âm thanh này, nên phải tự dựng pipeline bằng MediaCodec (mã hoá riêng
-    // video/audio) + MediaMuxer (ghép lại thành 1 file .mp4), thay cho việc phó mặc hết cho
-    // MediaRecorder như đường ghi cũ.
-    private var usingInternalAudioPipeline = false
-    private var videoCodec: MediaCodec? = null
-    private var audioCodec: MediaCodec? = null
-    private var audioRecord: AudioRecord? = null
-    private var muxer: MediaMuxer? = null
-    private var videoTrackIndex = -1
-    private var audioTrackIndex = -1
-    private var muxerStarted = false
-    private val muxerLock = Any()
-    private var videoCallbackThread: HandlerThread? = null
-    private var audioCallbackThread: HandlerThread? = null
-
-    // Mốc thời gian gốc của video (cùng hệ quy chiếu đồng hồ với presentationTimeUs mà hệ thống
-    // tự gán cho khung hình lấy từ Surface, tức System.nanoTime()) - dùng để dịch mốc thời gian
-    // về 0 khi ghi, VÀ để "cắt" khoảng thời gian tạm dừng ra khỏi trục thời gian video (giữ hành
-    // vi gapless giống hệt mediaRecorder.pause()/resume() cũ - không có đoạn đứng hình khi tạm
-    // dừng rồi phát tiếp, thời lượng tạm dừng không hề xuất hiện trong file kết quả).
-    private var videoBaseTimeNs = -1L
-    private var pausedAccumNs = 0L
-    private var pauseStartNs = -1L
-    // Audio KHÔNG cần trừ lùi thời gian tạm dừng như video: presentationTimeUs của audio do
-    // CHÍNH TA tự tính (đếm số mẫu/sample đã đưa vào bộ mã hoá), và việc đọc mẫu mới bị NGƯNG
-    // HẲN trong lúc tạm dừng (xem audioCodecCallback.onInputBufferAvailable) - nên tự nhiên đã
-    // gapless, không có khoảng trống nào để phải tính bù.
-    private var audioSamplesWritten = 0L
 
     // BẮT BUỘC từ Android 14 (API 34): phải registerCallback() cho MediaProjection TRƯỚC khi
     // gọi createVirtualDisplay(), nếu không hệ thống sẽ ném IllegalStateException ngay lập tức
@@ -167,330 +132,12 @@ class ScreenRecordService : Service() {
         outputPath = buildOutputPath(fileIndex, videoTitle)
 
         // Có quyền RECORD_AUDIO hay không quyết định có ghi âm kèm theo hay không - Manifest đã
-        // khai báo quyền này (dùng chung với tính năng tìm kiếm giọng nói), nhưng vẫn kiểm tra
-        // lại ở đây cho chắc (người dùng có thể đã thu hồi quyền trong Cài đặt hệ thống) để
-        // không khởi tạo audio rồi thất bại giữa chừng, kéo cả phần video theo.
+        // khai báo quyền này, nhưng vẫn kiểm tra lại ở đây cho chắc (người dùng có thể đã thu
+        // hồi quyền trong Cài đặt hệ thống) để không cấu hình audio rồi prepare() ném lỗi.
         val hasAudioPermission = ContextCompat.checkSelfPermission(
             this, Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
-        // SỬA LỖI (ghi âm bị rè khi dùng micro): micro thu CẢ tiếng loa phát ra LẪN tiếng ồn môi
-        // trường xung quanh (tay cầm/chạm vào máy, gió, rung loa, vọng âm...) -> ra tiếng rè/ù,
-        // đặc biệt rõ khi quay ở tốc độ 8x (RECORD_SPEED_FACTOR) vì âm thanh cũng bị tăng tốc
-        // theo. Từ Android 10 (API 29) trở lên, dùng AudioPlaybackCaptureConfiguration để bắt
-        // THẲNG luồng âm thanh mà chính app này đang phát ra (không đi qua loa/micro vật lý nào
-        // cả) -> hoàn toàn sạch, không còn rè/ồn nền. Tự capture âm thanh CỦA CHÍNH APP MÌNH luôn
-        // được phép (không cần app khác "mở khoá" gì thêm) - chỉ cần quyền RECORD_AUDIO như cũ.
-        // Vì MediaRecorder không hỗ trợ nguồn âm thanh này, phải tự dựng 1 pipeline riêng bằng
-        // MediaCodec + AudioRecord + MediaMuxer (startInternalPipeline() bên dưới) thay cho
-        // MediaRecorder. Trên Android cũ hơn (< API 29, không có API này), đành quay lại dùng
-        // MediaRecorder + micro như trước (startLegacyMediaRecorderPipeline()).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            usingInternalAudioPipeline = true
-            startInternalPipeline(width, height, dpi, hasAudioPermission)
-        } else {
-            usingInternalAudioPipeline = false
-            startLegacyMediaRecorderPipeline(width, height, dpi, hasAudioPermission)
-        }
-
-        isPaused = false
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Đường ghi MỚI (API 29+): MediaCodec (video qua Surface + audio AAC) + AudioRecord (bắt âm
-    // thanh nội bộ) + MediaMuxer (ghép 2 luồng đã mã hoá thành 1 file .mp4).
-    // ---------------------------------------------------------------------------------------
-
-    private fun startInternalPipeline(width: Int, height: Int, dpi: Int, hasAudioPermission: Boolean) {
-        muxer = MediaMuxer(outputPath!!, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        muxerStarted = false
-        videoTrackIndex = -1
-        audioTrackIndex = -1
-        videoBaseTimeNs = -1L
-        pausedAccumNs = 0L
-        pauseStartNs = -1L
-        audioSamplesWritten = 0L
-
-        // 2 HandlerThread RIÊNG cho callback của video codec và audio codec - KHÔNG dùng chung 1
-        // thread, vì callback đọc audio (onInputBufferAvailable của audioCodec) gọi AudioRecord.
-        // read() ở chế độ BLOCKING (chờ có đủ dữ liệu mới trả về); nếu dùng chung 1 thread với
-        // video, mỗi lần audio phải "chờ dữ liệu" sẽ làm nghẽn luôn cả việc xử lý output của
-        // video codec phía sau nó trong hàng đợi -> giật/rớt khung hình.
-        videoCallbackThread = HandlerThread("ScreenRecordVideoCodec").apply { start() }
-        audioCallbackThread = HandlerThread("ScreenRecordAudioCodec").apply { start() }
-
-        // ---- Video: mã hoá H.264, nhận khung hình qua Surface (giống hệt cách MediaRecorder
-        // làm trước đây) - virtualDisplay render thẳng vào Surface này. ----
-        val videoFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BIT_RATE)
-            setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FRAME_RATE)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL)
-        }
-        videoCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
-            configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        }
-        val inputSurface = videoCodec!!.createInputSurface()
-        videoCodec!!.setCallback(videoCodecCallback, android.os.Handler(videoCallbackThread!!.looper))
-        videoCodec!!.start()
-
-        virtualDisplay = mediaProjection!!.createVirtualDisplay(
-            "ScreenRecord",
-            width, height, dpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            inputSurface,
-            null, null
-        )
-
-        // ---- Audio: chỉ bật khi có quyền RECORD_AUDIO, giống hệt điều kiện của đường ghi cũ ----
-        if (hasAudioPermission) {
-            try {
-                startInternalAudioCapture()
-            } catch (e: Exception) {
-                // Không khởi tạo được audio nội bộ (vd thiết bị/ROM lỗi driver, xung đột hiếm với
-                // app khác đang giữ AudioRecord độc quyền...) -> quay TIẾP TỤC nhưng KHÔNG có âm
-                // thanh, còn hơn làm hỏng luôn cả phần video vì lỗi audio.
-                Log.e(TAG, "Khong khoi tao duoc audio noi bo - quay tiep tuc KHONG co am thanh", e)
-                try { audioRecord?.release() } catch (_: Exception) {}
-                audioRecord = null
-                try { audioCodec?.release() } catch (_: Exception) {}
-                audioCodec = null
-            }
-        }
-    }
-
-    private fun startInternalAudioCapture() {
-        val playbackConfig = AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
-            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-            .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-            .addMatchingUsage(AudioAttributes.USAGE_GAME)
-            .build()
-
-        val channelMask = if (AUDIO_CHANNEL_COUNT == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
-        val minBufSize = AudioRecord.getMinBufferSize(
-            AUDIO_SAMPLE_RATE, channelMask, AudioFormat.ENCODING_PCM_16BIT
-        ).let { if (it > 0) it else AUDIO_SAMPLE_RATE * 2 }
-
-        audioRecord = AudioRecord.Builder()
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(AUDIO_SAMPLE_RATE)
-                    .setChannelMask(channelMask)
-                    .build()
-            )
-            .setBufferSizeInBytes(minBufSize * 2)
-            .setAudioPlaybackCaptureConfig(playbackConfig)
-            .build()
-
-        val audioFormat = MediaFormat.createAudioFormat(
-            MediaFormat.MIMETYPE_AUDIO_AAC, AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_COUNT
-        ).apply {
-            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE)
-        }
-        audioCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
-            configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        }
-        audioCodec!!.setCallback(audioCodecCallback, android.os.Handler(audioCallbackThread!!.looper))
-        audioCodec!!.start()
-        audioRecord!!.startRecording()
-    }
-
-    // Video KHÔNG dùng input buffer thủ công - dữ liệu tới qua Surface (createInputSurface()).
-    private val videoCodecCallback = object : MediaCodec.Callback() {
-        override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
-
-        override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-            handleVideoOutput(codec, index, info)
-        }
-
-        override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
-            Log.e(TAG, "Loi video codec", e)
-        }
-
-        override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
-            synchronized(muxerLock) {
-                videoTrackIndex = try { muxer?.addTrack(format) ?: -1 } catch (e: Exception) { -1 }
-                maybeStartMuxerLocked()
-            }
-        }
-    }
-
-    private val audioCodecCallback = object : MediaCodec.Callback() {
-        // Đọc PCM trực tiếp từ AudioRecord NGAY TẠI ĐÂY (thay vì 1 thread đọc riêng rồi tự
-        // dequeue/queue input buffer thủ công) - đơn giản hơn và tránh phải tự đồng bộ 2 luồng độc
-        // lập; MediaCodec ở chế độ callback (async) không cho phép trộn lẫn với gọi
-        // dequeueInputBuffer() thủ công từ thread khác.
-        override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-            if (isPaused) {
-                // Đang tạm dừng: KHÔNG đọc dữ liệu mới từ AudioRecord (bỏ qua hẳn khoảng thời
-                // gian tạm dừng, y hệt hành vi mediaRecorder.pause() cũ) - chỉ trả buffer rỗng lại
-                // cho codec để nó không bị "đói" input mãi.
-                try { codec.queueInputBuffer(index, 0, 0, 0, 0) } catch (_: Exception) {}
-                return
-            }
-            val ar = audioRecord
-            val buffer = if (ar != null) codec.getInputBuffer(index) else null
-            if (ar == null || buffer == null) {
-                try { codec.queueInputBuffer(index, 0, 0, 0, 0) } catch (_: Exception) {}
-                return
-            }
-            buffer.clear()
-            val read = try { ar.read(buffer, buffer.capacity()) } catch (e: Exception) { -1 }
-            if (read > 0) {
-                // PTS × SPEED_FACTOR: kéo dãn audio về 1x thời gian thực, khớp với video.
-                // Audio capture từ luồng đang phát 4x → 1 giây thu = 4 giây nội dung.
-                // samples / 44100 = thời gian thu thật → × 4 = thời gian nội dung thật → 1x.
-                val ptsUs = audioSamplesWritten * 1_000_000L * SPEED_FACTOR / AUDIO_SAMPLE_RATE
-                audioSamplesWritten += read / (2 * AUDIO_CHANNEL_COUNT) // 2 byte/mẫu (PCM 16-bit)
-                try { codec.queueInputBuffer(index, 0, read, ptsUs, 0) } catch (_: Exception) {}
-            } else {
-                try { codec.queueInputBuffer(index, 0, 0, 0, 0) } catch (_: Exception) {}
-            }
-        }
-
-        override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-            handleAudioOutput(codec, index, info)
-        }
-
-        override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
-            Log.e(TAG, "Loi audio codec", e)
-        }
-
-        override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
-            synchronized(muxerLock) {
-                audioTrackIndex = try { muxer?.addTrack(format) ?: -1 } catch (e: Exception) { -1 }
-                maybeStartMuxerLocked()
-            }
-        }
-    }
-
-    // PHẢI được gọi trong lúc đang giữ muxerLock.
-    private fun maybeStartMuxerLocked() {
-        if (muxerStarted) return
-        val needsAudio = audioCodec != null
-        val videoReady = videoTrackIndex >= 0
-        val audioReady = !needsAudio || audioTrackIndex >= 0
-        if (videoReady && audioReady) {
-            try {
-                muxer?.start()
-                muxerStarted = true
-            } catch (e: Exception) {
-                Log.e(TAG, "Loi khoi dong muxer", e)
-            }
-        }
-    }
-
-    // Dịch presentationTimeUs gốc về mốc 0 tại khung hình đầu tiên, trừ thời gian tạm dừng,
-    // rồi nhân × SPEED_FACTOR để kéo dãn duration video trong file về 1x thời gian thực.
-    //
-    // Lý do nhân SPEED_FACTOR:
-    //   Video đang phát ở 4x → Surface nhận frame nhanh 4x nhưng PTS gốc tăng theo
-    //   đồng hồ thật (1x). Nếu không nhân, 1 giây quay chỉ ghi được 1 giây trong file
-    //   nhưng chứa 4 giây nội dung → player phát ra quá nhanh (4x) khi xem lại.
-    //   Nhân × 4 → 1 giây quay = 4 giây trong file = đúng thời lượng nội dung thật → 1x.
-    //
-    // Audio PTS cũng nhân × SPEED_FACTOR (xem audioCodecCallback) → hai track khớp nhau.
-    private fun adjustedVideoPtsUs(rawPtsUs: Long): Long {
-        val rawNs = rawPtsUs * 1000L
-        if (videoBaseTimeNs < 0) videoBaseTimeNs = rawNs
-        val adjustedNs = rawNs - videoBaseTimeNs - pausedAccumNs
-        val clampedNs = if (adjustedNs < 0) 0L else adjustedNs
-        return clampedNs * SPEED_FACTOR / 1000L
-    }
-
-    private fun handleVideoOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-        try {
-            val isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
-            if (!isConfig && info.size > 0 && !isPaused) {
-                val buffer: ByteBuffer? = codec.getOutputBuffer(index)
-                if (buffer != null) {
-                    buffer.position(info.offset)
-                    buffer.limit(info.offset + info.size)
-                    val adjusted = MediaCodec.BufferInfo().apply {
-                        set(info.offset, info.size, adjustedVideoPtsUs(info.presentationTimeUs), info.flags)
-                    }
-                    synchronized(muxerLock) {
-                        if (muxerStarted && videoTrackIndex >= 0) {
-                            try {
-                                muxer?.writeSampleData(videoTrackIndex, buffer, adjusted)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Loi ghi video sample", e)
-                            }
-                        }
-                    }
-                }
-            }
-        } finally {
-            try { codec.releaseOutputBuffer(index, false) } catch (_: Exception) {}
-        }
-    }
-
-    private fun handleAudioOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-        try {
-            val isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
-            if (!isConfig && info.size > 0) {
-                val buffer: ByteBuffer? = codec.getOutputBuffer(index)
-                if (buffer != null) {
-                    buffer.position(info.offset)
-                    buffer.limit(info.offset + info.size)
-                    synchronized(muxerLock) {
-                        if (muxerStarted && audioTrackIndex >= 0) {
-                            try {
-                                muxer?.writeSampleData(audioTrackIndex, buffer, info)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Loi ghi audio sample", e)
-                            }
-                        }
-                    }
-                }
-            }
-        } finally {
-            try { codec.releaseOutputBuffer(index, false) } catch (_: Exception) {}
-        }
-    }
-
-    private fun stopInternalPipeline() {
-        // Báo hết luồng vào cho video codec rồi chờ 1 chút để codec xả nốt các khung hình còn dở
-        // trong hàng đợi trước khi stop() cứng - tránh mất vài khung/mẫu cuối cùng.
-        try { videoCodec?.signalEndOfInputStream() } catch (_: Exception) {}
-        try { Thread.sleep(150) } catch (_: Exception) {}
-
-        try { audioRecord?.stop() } catch (_: Exception) {}
-        try { audioRecord?.release() } catch (_: Exception) {}
-        audioRecord = null
-
-        try { videoCodec?.stop() } catch (_: Exception) {}
-        try { videoCodec?.release() } catch (_: Exception) {}
-        videoCodec = null
-
-        try { audioCodec?.stop() } catch (_: Exception) {}
-        try { audioCodec?.release() } catch (_: Exception) {}
-        audioCodec = null
-
-        synchronized(muxerLock) {
-            if (muxerStarted) {
-                try { muxer?.stop() } catch (_: Exception) {}
-            }
-            try { muxer?.release() } catch (_: Exception) {}
-            muxer = null
-            muxerStarted = false
-            videoTrackIndex = -1
-            audioTrackIndex = -1
-        }
-
-        videoCallbackThread?.quitSafely()
-        videoCallbackThread = null
-        audioCallbackThread?.quitSafely()
-        audioCallbackThread = null
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Đường ghi CŨ (< API 29): MediaRecorder + micro thật - xem lý do ở startRecording().
-    // ---------------------------------------------------------------------------------------
-
-    private fun startLegacyMediaRecorderPipeline(width: Int, height: Int, dpi: Int, hasAudioPermission: Boolean) {
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             MediaRecorder(this)
         } else {
@@ -500,7 +147,12 @@ class ScreenRecordService : Service() {
 
         mediaRecorder!!.apply {
             if (hasAudioPermission) {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
+                // VOICE_RECOGNITION thay vì MIC mặc định: nguồn này tắt sẵn các hiệu ứng làm
+                // biến dạng giọng nói (AGC/AEC/NS mặc định của nguồn MIC đôi khi làm ù/rè âm
+                // thanh phát ra từ loa máy) và vẫn được driver xử lý ổn định trên hầu hết máy -
+                // đây là cách ghi âm CHẮC CHẮN hoạt động (qua mic vật lý thật), đơn giản hơn hẳn
+                // pipeline bắt âm thanh nội bộ đã bỏ (xem ghi chú hợp nhất ở đầu file).
+                setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
             }
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
@@ -511,9 +163,6 @@ class ScreenRecordService : Service() {
             }
             setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             setVideoSize(width, height)
-            // Nâng từ 30fps lên 60fps - mượt hơn khi xem lại, đặc biệt ở các đoạn chuyển động
-            // nhanh (kéo theo tăng bitrate bên dưới để 60fps không bị vỡ khối/mờ nhoè do thiếu
-            // dữ liệu trên mỗi khung hình).
             setVideoFrameRate(VIDEO_FRAME_RATE)
             setVideoEncodingBitRate(VIDEO_BIT_RATE)
             setOutputFile(outputPath)
@@ -529,14 +178,13 @@ class ScreenRecordService : Service() {
         )
 
         mediaRecorder!!.start()
+        isPaused = false
     }
 
     private fun pauseRecording() {
         if (isPaused) return
         isPaused = true
-        if (usingInternalAudioPipeline) {
-            pauseStartNs = System.nanoTime()
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try { mediaRecorder?.pause() } catch (_: Exception) {}
         }
     }
@@ -544,12 +192,7 @@ class ScreenRecordService : Service() {
     private fun resumeRecording() {
         if (!isPaused) return
         isPaused = false
-        if (usingInternalAudioPipeline) {
-            if (pauseStartNs >= 0) {
-                pausedAccumNs += (System.nanoTime() - pauseStartNs)
-                pauseStartNs = -1L
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try { mediaRecorder?.resume() } catch (_: Exception) {}
         }
     }
@@ -559,19 +202,13 @@ class ScreenRecordService : Service() {
     // mediaProjection.stop()/unregisterCallback() vì phiên đã kết thúc rồi, gọi lại có thể ném
     // lỗi hoặc vô nghĩa; chỉ cần dọn dẹp recorder/virtualDisplay và mã hoá file.
     private fun stopRecordingInternal(fromProjectionCallback: Boolean = false) {
-        val hasLegacyRecorder = mediaRecorder != null
-        val hasInternalPipeline = videoCodec != null || audioCodec != null || muxer != null
         // Nếu đã dọn dẹp rồi (vd ACTION_STOP và onStop() cùng gọi tới đây) thì bỏ qua, tránh mã
         // hoá/xoá file 2 lần.
-        if (!hasLegacyRecorder && !hasInternalPipeline) return
+        if (mediaRecorder == null && virtualDisplay == null) return
 
-        if (usingInternalAudioPipeline) {
-            stopInternalPipeline()
-        } else {
-            try { mediaRecorder?.stop() } catch (_: Exception) {}
-            mediaRecorder?.release()
-            mediaRecorder = null
-        }
+        try { mediaRecorder?.stop() } catch (_: Exception) {}
+        mediaRecorder?.release()
+        mediaRecorder = null
 
         virtualDisplay?.release()
         virtualDisplay = null
@@ -601,7 +238,7 @@ class ScreenRecordService : Service() {
         }
 
         @Suppress("DEPRECATION")
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= 33) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
             stopForeground(true)
