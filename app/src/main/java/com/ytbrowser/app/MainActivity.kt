@@ -2,6 +2,12 @@ package com.ytbrowser.app
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
+import android.content.res.Configuration
+import android.media.projection.MediaProjectionManager
+import android.view.MotionEvent
+import android.widget.Button
+import android.widget.LinearLayout
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -67,6 +73,22 @@ class MainActivity : AppCompatActivity() {
     // Đây chính là lý do trước đây gặp kiểu lỗi "tắt màn hình lần đầu thì được, lần sau lại không
     // phát tiếp" - xác suất trúng khoảng hở đó khác nhau mỗi lần, không phải lần nào cũng dính.
     private var isAutoPausing = false
+
+    // --- Screen Recording ---
+    private var screenRecordIndex = 1          // tăng dần: y.1, y.2, y.3 ...
+    private var isRecording       = false
+    private var recordResultCode  = -1
+    private var recordResultData: Intent? = null
+
+    private val mediaProjectionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            recordResultCode = result.resultCode
+            recordResultData = result.data
+            startScreenRecord()
+        }
+    }
 
     // --- Hỗ trợ fullscreen cho video HTML5 (nút phóng to trong trình phát YouTube) ---
     private var fullscreenContainer: FrameLayout? = null
@@ -134,6 +156,151 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
 
         webView.loadUrl(START_URL)
+    }
+
+    // Nhận sự kiện chạm trên WebView - phát hiện vuốt 2 ngón xuống khi landscape
+    private var twoFingerStartY = 0f
+    private var twoFingerActive = false
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            && fullscreenView != null) {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (ev.pointerCount == 2) {
+                        twoFingerStartY = (ev.getY(0) + ev.getY(1)) / 2f
+                        twoFingerActive = true
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (twoFingerActive && ev.pointerCount == 2) {
+                        val currentY = (ev.getY(0) + ev.getY(1)) / 2f
+                        if (currentY - twoFingerStartY > 120f) {
+                            twoFingerActive = false
+                            showScreenRecordDialog()
+                        }
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP,
+                MotionEvent.ACTION_CANCEL -> twoFingerActive = false
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun showScreenRecordDialog() {
+        if (isRecording) return // đang quay rồi, không hiện lại
+        runOnUiThread {
+            val ctx = this
+            val layout = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(60, 60, 60, 40)
+            }
+            val btn = Button(ctx).apply {
+                text = "⏺  Quay video màn hình (16x)"
+                textSize = 16f
+                setOnClickListener { /* handled below */ }
+            }
+            layout.addView(btn)
+
+            val dialog = AlertDialog.Builder(ctx)
+                .setTitle("Lưu video")
+                .setView(layout)
+                .setNegativeButton("Huỷ", null)
+                .create()
+
+            btn.setOnClickListener {
+                dialog.dismiss()
+                requestScreenRecord()
+            }
+            dialog.show()
+        }
+    }
+
+    private fun requestScreenRecord() {
+        if (recordResultData != null) {
+            // Đã có quyền từ trước
+            startScreenRecord()
+        } else {
+            val mpm = getSystemService(MediaProjectionManager::class.java)
+            mediaProjectionLauncher.launch(mpm.createScreenCaptureIntent())
+        }
+    }
+
+    private fun startScreenRecord() {
+        val data = recordResultData ?: return
+        isRecording = true
+
+        // Phát 16x qua JS
+        webView.evaluateJavascript(
+            "(function(){ var v=document.querySelector('video'); if(v) v.playbackRate=16; })();", null
+        )
+
+        // Inject JS theo dõi video pause/end -> điều khiển recorder
+        injectRecordSyncBridge()
+
+        // Khởi động service quay
+        val intent = Intent(this, ScreenRecordService::class.java).apply {
+            action = ScreenRecordService.ACTION_START
+            putExtra(ScreenRecordService.EXTRA_RESULT_CODE, recordResultCode)
+            putExtra(ScreenRecordService.EXTRA_RESULT_DATA, data)
+            putExtra(ScreenRecordService.EXTRA_FILE_INDEX, screenRecordIndex)
+        }
+        startForegroundService(intent)
+
+        Toast.makeText(this, "Bắt đầu quay — y.$screenRecordIndex.mp4", Toast.LENGTH_SHORT).show()
+        screenRecordIndex++
+    }
+
+    private fun injectRecordSyncBridge() {
+        val js = """
+            (function() {
+                if (window.__ytbrowser_record_sync) return;
+                window.__ytbrowser_record_sync = true;
+                var v = document.querySelector('video');
+                if (!v) return;
+                v.addEventListener('pause', function() {
+                    if (window.RecordBridge) RecordBridge.onVideoPause();
+                });
+                v.addEventListener('play', function() {
+                    if (window.RecordBridge) RecordBridge.onVideoResume();
+                });
+                v.addEventListener('ended', function() {
+                    if (window.RecordBridge) RecordBridge.onVideoEnded();
+                });
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+        webView.addJavascriptInterface(RecordBridge(), "RecordBridge")
+    }
+
+    inner class RecordBridge {
+        @JavascriptInterface
+        fun onVideoPause() {
+            if (!isRecording) return
+            startService(Intent(this@MainActivity, ScreenRecordService::class.java).apply {
+                action = ScreenRecordService.ACTION_PAUSE
+            })
+        }
+        @JavascriptInterface
+        fun onVideoResume() {
+            if (!isRecording) return
+            startService(Intent(this@MainActivity, ScreenRecordService::class.java).apply {
+                action = ScreenRecordService.ACTION_RESUME
+            })
+        }
+        @JavascriptInterface
+        fun onVideoEnded() {
+            if (!isRecording) return
+            isRecording = false
+            // Dừng quay và lưu
+            startService(Intent(this@MainActivity, ScreenRecordService::class.java).apply {
+                action = ScreenRecordService.ACTION_STOP
+            })
+            runOnUiThread {
+                Toast.makeText(this@MainActivity, "Đã lưu video y.${screenRecordIndex - 1}.mp4", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun loadBlocklist() {

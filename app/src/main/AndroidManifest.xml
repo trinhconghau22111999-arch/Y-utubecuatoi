@@ -20,6 +20,9 @@
          ưu hoá pin" - nhiều hãng (Xiaomi/Oppo/Vivo...) vẫn có thể kill app dù đã có Foreground
          Service nếu app không nằm trong whitelist pin này. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!-- Cần khai báo để app có thể "nhìn thấy" và gọi được activity nhận dạng
          giọng nói của hệ thống trên Android 11+ (package visibility). -->
@@ -56,5 +59,9 @@
             android:foregroundServiceType="mediaPlayback">
 
         </service>
+        <service
+            android:name=".ScreenRecordService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>
