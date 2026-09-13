@@ -5,6 +5,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,34 +25,24 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Build debug APK
-        id: build
         run: |
           chmod +x gradlew
-          set +e
-          ./gradlew assembleDebug > build.log 2>&1
-          BUILD_EXIT=$?
-          if [ $BUILD_EXIT -ne 0 ]; then
-            echo "=== BUILD FAILED - ERROR OUTPUT ==="
-            grep -n "error:" build.log | head -30
-            echo "=== LAST 50 LINES ==="
-            tail -50 build.log
-            exit $BUILD_EXIT
-          fi
+          ./gradlew assembleDebug
+          echo "=== APK path ==="
           find . -name "*.apk"
 
-      - name: Upload APK
-        if: success()
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: "**/*.apk"
+          path: app/build/outputs/apk/debug/app-debug.apk
 
       - name: Create Release
-        if: success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: "Build #${{ github.run_number }}"
-          files: "**/*.apk"
+          name: "Tải APK - Build #${{ github.run_number }}"
+          body: "Bấm vào file bên dưới để tải APK"
+          files: app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
