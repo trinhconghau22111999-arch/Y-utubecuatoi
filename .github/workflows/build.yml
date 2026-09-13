@@ -22,18 +22,27 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Build debug APK
+        id: build
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace 2>&1 | grep -E "error:|Error |FAILED|warning:|e:.*\.kt" | tail -40
-          ./gradlew assembleDebug
+          set +e
+          ./gradlew assembleDebug > build.log 2>&1
+          BUILD_EXIT=$?
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "=== BUILD FAILED - ERROR OUTPUT ==="
+            grep -n "error:" build.log | head -30
+            echo "=== LAST 50 LINES ==="
+            tail -50 build.log
+            exit $BUILD_EXIT
+          fi
           find . -name "*.apk"
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
           path: "**/*.apk"
-          if-no-files-found: warn
 
       - name: Create Release
         if: success()
