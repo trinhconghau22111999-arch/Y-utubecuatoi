@@ -2,7 +2,6 @@ package com.ytbrowser.app
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.media.projection.MediaProjectionManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -73,33 +72,14 @@ class MainActivity : AppCompatActivity() {
     // phát tiếp" - xác suất trúng khoảng hở đó khác nhau mỗi lần, không phải lần nào cũng dính.
     private var isAutoPausing = false
 
-    // --- Screen Recording ---
-    private var screenRecordIndex = 1          // tăng dần: y.1, y.2, y.3 ...
-    private var isRecording       = false
-    private var recordResultCode  = -1
-    private var recordResultData: Intent? = null
-    // Hệ số tốc độ phát khi quay: 3x - để RÚT NGẮN THỜI GIAN QUAY (video 40 phút chỉ mất ~13-14
-    // phút để quay xong). KHÔNG kéo giãn PTS về lại 1x khi lưu nữa (khác bản trước) - âm thanh là
-    // dòng mẫu liên tục theo tần số lấy mẫu cố định, không có cách nào "giãn" nó về đúng tốc độ +
-    // đúng cao độ mà không cần xử lý DSP time-stretch riêng (không có sẵn trong Android SDK, phải
-    // nhúng thêm thư viện ngoài) - mọi lần trước cố làm việc này đều ra file bị mất/rè tiếng.
-    // Theo yêu cầu: LƯU LUÔN video+audio ở tốc độ 3x, KHÔNG cố đưa về 1x - vì cả 2 track đều được
-    // MediaRecorder ghi theo CÙNG 1 đồng hồ thời gian thực (video từ Surface, audio từ mic) nên tự
-    // nhiên đã khớp nhau hoàn hảo, không lệch tiếng dù xem lại sẽ nhanh gấp 3 lần (giọng hơi cao).
-    // Trước đây từng thử 4x rồi hạ xuống 2x vì tỉ lệ nhẹ hơn nên preservesPitch xử lý pitch ổn
-    // định hơn, đỡ rè/lỗi hơn - giờ NÂNG LẠI lên 3x theo yêu cầu (nằm giữa 2x đã ổn định và 4x
-    // từng bị lỗi). Nếu sau khi build/thử lại thấy giọng bị méo/rè như hồi 4x, hạ về lại 2x.
-    private val RECORD_SPEED_FACTOR = 3
-
-    private val mediaProjectionLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == RESULT_OK && result.data != null) {
-            recordResultCode = result.resultCode
-            recordResultData = result.data
-            startScreenRecord()
-        }
-    }
+    // --- Bật/tắt phát nhanh 3x (thay cho tính năng quay màn hình đã bỏ) ---
+    // Trước đây ô vuông nổi trên trình phát dùng để bắt đầu QUAY màn hình (ép tốc độ 3x trong
+    // lúc quay để rút ngắn thời gian, rồi mã hoá + lưu file vào Downloads/vdy). Theo yêu cầu, bỏ
+    // hẳn toàn bộ luồng quay/lưu/mã hoá đó (ScreenRecordService, VideoCrypto, quyền chiếu màn
+    // hình, quyền ghi bộ nhớ ngoài...) - CHỈ giữ lại phần "phát nhanh 3x", giờ là 1 nút bật/tắt
+    // đơn giản: bấm 1 lần để phát ở 3x, bấm lại để trở về 1x. Không còn quay/lưu file gì cả.
+    private var is3xSpeedActive = false
+    private val FAST_SPEED_FACTOR = 3
 
     // --- Hỗ trợ fullscreen cho video HTML5 (nút phóng to trong trình phát YouTube) ---
     private var fullscreenContainer: FrameLayout? = null
@@ -137,25 +117,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Xin quyền RECORD_AUDIO RIÊNG cho lúc bắt đầu quay màn hình (không dùng chung
-    // micPermissionLauncher ở trên vì launcher đó, khi được cấp quyền, tự mở luôn hộp thoại nhận
-    // dạng giọng nói - không phải điều muốn xảy ra ở đây). Dù người dùng đồng ý hay từ chối, vẫn
-    // tiếp tục xin quyền chiếu màn hình như bình thường ngay sau đó - từ chối chỉ khiến bản quay
-    // không có tiếng (xem hasAudioPermission trong ScreenRecordService), không chặn hẳn tính
-    // năng quay màn hình.
-    private val recordAudioPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (!granted) {
-            Toast.makeText(
-                this,
-                "Không có quyền micro - bản quay sẽ không có tiếng",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-        proceedToScreenCapturePermission()
-    }
-
     // Danh sách domain cần chặn, đọc từ assets/blocklist.txt
     private val blockedHosts: MutableSet<String> = HashSet()
 
@@ -172,15 +133,15 @@ class MainActivity : AppCompatActivity() {
 
     private val START_URL = "https://m.youtube.com/"
 
-    // Vị trí/kích thước ô vuông tải xuống (xem addDownloadOverlayButton) - chỉnh 3 số này (dp)
+    // Vị trí/kích thước ô vuông "3x" (xem addSpeedToggleButton) - chỉnh 3 số này (dp)
     // nếu ô vuông chưa đè khớp lên đúng vị trí nút Cài đặt thật trên máy đang dùng.
-    private val DOWNLOAD_BTN_SIZE_DP = 44
-    private val DOWNLOAD_BTN_TOP_DP = 8
-    private val DOWNLOAD_BTN_RIGHT_DP = 48
+    private val SPEED_BTN_SIZE_DP = 44
+    private val SPEED_BTN_TOP_DP = 8
+    private val SPEED_BTN_RIGHT_DP = 48
     // Dịch nút sang PHẢI thêm 1 khoảng bằng đúng 1/2 chiều ngang của icon - trừ bớt vào lề phải
     // gốc (rightMargin nhỏ hơn = nằm gần mép phải hơn = dịch sang phải). Xem cách dùng ở
-    // addDownloadOverlayButton() bên dưới.
-    private val DOWNLOAD_BTN_RIGHT_SHIFT_DP = DOWNLOAD_BTN_SIZE_DP / 2
+    // addSpeedToggleButton() bên dưới.
+    private val SPEED_BTN_RIGHT_SHIFT_DP = SPEED_BTN_SIZE_DP / 2
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -192,424 +153,121 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webview)
         progressBar = findViewById(R.id.progressBar)
 
-        // SUA LOI TU XOA/GHI DE VIDEO CU: truoc day screenRecordIndex luon khoi tao = 1 moi lan
-        // app mo lai (process bi he thong kill nen, hoac nguoi dung tu tat/mo lai) - lan quay tiep
-        // theo se ghi ra dung ten "y.1..." da dung truoc do, khi ma hoa se DE THANG len file
-        // "y.1.locked" cu, mat trang video cu ma file moi lai mang dung ten file cu. Quet lai thu
-        // muc Downloads/vdy moi khi mo app, lay so lon nhat dang co roi +1 - dam bao KHONG BAO GIO
-        // trung ten voi file da quay truoc do, du app bi tat/mo lai bao nhieu lan.
-        screenRecordIndex = computeNextRecordIndex()
-
         loadBlocklist()
         setupWebView()
 
         webView.loadUrl(START_URL)
     }
 
-    // Tim so thu tu tiep theo an toan de dat ten file quay moi: quet toan bo file dang co trong
-    // Downloads/vdy dang "y.<so>.locked" (da ma hoa xong) hoac "y.<so>.mp4" (lo do dang quay/ma
-    // hoa dang do bi ngat) roi lay so LON NHAT + 1. Neu thu muc chua ton tai/rong thi bat dau tu 1.
-    private fun computeNextRecordIndex(): Int {
-        val downloads = android.os.Environment.getExternalStoragePublicDirectory(
-            android.os.Environment.DIRECTORY_DOWNLOADS
-        )
-        val dir = java.io.File(downloads, "vdy")
-        val files = dir.listFiles() ?: return 1
-        val pattern = Regex("""^y\.(\d+)\.(locked|mp4)$""")
-        val maxIndex = files.mapNotNull { f ->
-            pattern.find(f.name)?.groupValues?.get(1)?.toIntOrNull()
-        }.maxOrNull() ?: 0
-        return maxIndex + 1
-    }
-
-    // ---- Ô vuông tải xuống, đè cố định lên vị trí nút Cài đặt của trình phát khi toàn màn hình ----
-    // Trước đây tính năng tải video dùng cử chỉ vuốt 2 ngón xuống màn hình khi xoay ngang, nhưng
-    // cử chỉ khó nhớ/khó bấm trúng. Thay bằng 1 ô vuông nhỏ, native Android (KHÔNG phải phần tử
-    // trong WebView), được thêm làm view con CUỐI CÙNG của fullscreenContainer (xem
-    // onShowCustomView bên dưới) nên nó luôn nằm TRÊN CÙNG, chặn đúng vị trí nút Cài đặt (gear)
-    // của trình phát YouTube bên dưới - người dùng bấm vào đó sẽ trúng ô vuông này (kích hoạt tải
-    // luôn, không mở được menu Cài đặt của YouTube nữa) thay vì bấm trúng nút Cài đặt thật.
-    // Ô vuông chỉ tồn tại khi đang toàn màn hình, tự bị gỡ bỏ khi thoát toàn màn hình.
+    // ---- Ô vuông "3x" bật/tắt phát nhanh, đè cố định lên vị trí nút Cài đặt của trình phát khi
+    // toàn màn hình (thay cho ô vuông "tải xuống/quay màn hình" đã bỏ theo yêu cầu) ----
+    // Trước đây ô vuông này dùng để bắt đầu QUAY màn hình (xin quyền chiếu màn hình + micro, ép
+    // tốc độ 3x, mã hoá + lưu file vào Downloads/vdy). Toàn bộ luồng quay/lưu/mã hoá đó đã bị bỏ -
+    // giờ ô vuông chỉ đơn giản là 1 công tắc BẬT/TẮT phát nhanh 3x: bấm 1 lần để phát ở 3x (chữ
+    // "3x" đổi màu để báo đang bật), bấm lại để trở về 1x. Không quay/lưu file gì cả.
+    // Vẫn giữ đúng vị trí đè lên nút Cài đặt (gear) của trình phát YouTube như thiết kế cũ, vì lý
+    // do đó vẫn còn nguyên: chặn không cho mở nhầm menu Cài đặt không dùng được trong app này.
     //
     // LƯU Ý VỊ TRÍ: toạ độ nút Cài đặt của YouTube không cố định tuyệt đối giữa các máy/khổ màn
-    // hình (phụ thuộc mật độ điểm ảnh, có thanh cắt tai thỏ hay không...), nên DOWNLOAD_BTN_TOP_DP
-    // và DOWNLOAD_BTN_RIGHT_DP dưới đây là ước lượng ban đầu - nếu ô vuông chưa đè khớp hẳn lên
+    // hình (phụ thuộc mật độ điểm ảnh, có thanh cắt tai thỏ hay không...), nên SPEED_BTN_TOP_DP
+    // và SPEED_BTN_RIGHT_DP dưới đây là ước lượng ban đầu - nếu ô vuông chưa đè khớp hẳn lên
     // nút Cài đặt trên máy thật, chỉ cần chỉnh 2 số này (đơn vị dp) rồi build lại.
-    private var downloadOverlayButton: View? = null
+    private var speedToggleButton: View? = null
 
-    private fun addDownloadOverlayButton(container: FrameLayout) {
-        if (downloadOverlayButton != null) return
+    private fun addSpeedToggleButton(container: FrameLayout) {
+        if (speedToggleButton != null) return
         val density = resources.displayMetrics.density
-        val sizePx = (DOWNLOAD_BTN_SIZE_DP * density).toInt()
+        val sizePx = (SPEED_BTN_SIZE_DP * density).toInt()
         val btn = object : View(this) {
-            // Cọ vẽ mũi tên (nét liền, đầu/nối tròn cho mượt) và đầu mũi tên (tô đặc) - dùng
-            // chung 1 màu xanh lá, tạo mới trong onDraw() vì kích thước view (để tính toạ độ
-            // theo %) chỉ có thật khi layout xong, không có sẵn lúc khởi tạo.
+            // Vẽ chữ "3x" - màu đổi theo trạng thái bật/tắt (is3xSpeedActive) để người dùng biết
+            // ngay đang phát nhanh hay đang phát bình thường mà không cần chữ giải thích thêm.
             override fun onDraw(canvas: Canvas) {
                 super.onDraw(canvas)
                 val w = width.toFloat()
                 val h = height.toFloat()
                 if (w <= 0f || h <= 0f) return
-                val green = Color.parseColor("#4CAF50")
-                val cx = w / 2f
 
-                val shaftPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = green
-                    style = Paint.Style.STROKE
-                    strokeWidth = w * 0.09f
-                    strokeCap = Paint.Cap.ROUND
-                }
-                // Thân mũi tên: 1 đường thẳng đứng từ trên xuống gần giữa
-                canvas.drawLine(cx, h * 0.20f, cx, h * 0.52f, shaftPaint)
-                // Gạch chân dưới đáy (khay tải xuống) - đặc trưng của icon "download"
-                canvas.drawLine(w * 0.28f, h * 0.80f, w * 0.72f, h * 0.80f, shaftPaint)
+                // Cam khi đang BẬT 3x (dễ nhận ra là "đang khác bình thường"), xanh lá khi đang TẮT
+                // (giữ tông màu quen thuộc với icon cũ) - đổi màu là cách báo trạng thái duy nhất,
+                // không cần thêm chữ/icon phụ nào khác.
+                val activeColor = Color.parseColor("#FF9800")
+                val inactiveColor = Color.parseColor("#4CAF50")
 
-                // Đầu mũi tên: hình tam giác tô đặc, chỉa xuống
-                val headPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = green
-                    style = Paint.Style.FILL
+                val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = if (is3xSpeedActive) activeColor else inactiveColor
+                    textAlign = Paint.Align.CENTER
+                    textSize = h * 0.42f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
                 }
-                val headHalfWidth = w * 0.20f
-                val headTop = h * 0.44f
-                val headTip = h * 0.66f
-                val path = Path().apply {
-                    moveTo(cx - headHalfWidth, headTop)
-                    lineTo(cx + headHalfWidth, headTop)
-                    lineTo(cx, headTip)
-                    close()
-                }
-                canvas.drawPath(path, headPaint)
+                val label = "3x"
+                // Căn chữ theo đúng tâm dọc của view (không dùng baseline mặc định, vì baseline
+                // canh theo mép trên chữ chứ không phải tâm hình học của nó).
+                val textY = h / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+                canvas.drawText(label, w / 2f, textY, textPaint)
             }
         }.apply {
-            // Nền ĐEN (không còn để mờ như trước) - theo đúng yêu cầu, dễ nhận ra hơn.
+            // Nền ĐEN (giữ nguyên như thiết kế cũ) - dễ nhận ra hơn, tương phản tốt với chữ.
             setBackgroundColor(Color.BLACK)
             setWillNotDraw(false) // bắt buộc: View trơn mặc định bỏ qua onDraw() để tối ưu
-            contentDescription = "Tải video"
-            setOnClickListener { onDownloadButtonTapped() }
+            contentDescription = "Bật/tắt phát nhanh 3x"
+            setOnClickListener { onSpeedButtonTapped() }
         }
         val params = FrameLayout.LayoutParams(sizePx, sizePx).apply {
             gravity = android.view.Gravity.TOP or android.view.Gravity.END
-            topMargin = (DOWNLOAD_BTN_TOP_DP * density).toInt()
+            topMargin = (SPEED_BTN_TOP_DP * density).toInt()
             // Dịch sang phải thêm 1/2 chiều ngang icon so với vị trí gốc (xem
-            // DOWNLOAD_BTN_RIGHT_SHIFT_DP) - rightMargin nhỏ hơn nghĩa là nằm gần mép phải hơn.
-            rightMargin = ((DOWNLOAD_BTN_RIGHT_DP - DOWNLOAD_BTN_RIGHT_SHIFT_DP) * density).toInt()
+            // SPEED_BTN_RIGHT_SHIFT_DP) - rightMargin nhỏ hơn nghĩa là nằm gần mép phải hơn.
+            rightMargin = ((SPEED_BTN_RIGHT_DP - SPEED_BTN_RIGHT_SHIFT_DP) * density).toInt()
         }
         container.addView(btn, params) // thêm SAU CÙNG -> nổi trên cùng, đè lên video/nút cài đặt bên dưới
-        downloadOverlayButton = btn
+        speedToggleButton = btn
     }
 
-    private fun removeDownloadOverlayButton() {
-        downloadOverlayButton?.let { (it.parent as? ViewGroup)?.removeView(it) }
-        downloadOverlayButton = null
+    private fun removeSpeedToggleButton() {
+        speedToggleButton?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        speedToggleButton = null
     }
 
-    private fun onDownloadButtonTapped() {
-        if (isRecording) {
-            Toast.makeText(this, "Đang quay rồi…", Toast.LENGTH_SHORT).show()
-            return
-        }
-        // Bấm là tải luôn - bỏ qua bước hộp thoại xác nhận trước đây, vì bản thân ô vuông
-        // này đã đóng vai trò là "nút bấm để tải".
-        requestScreenRecord()
+    private fun onSpeedButtonTapped() {
+        is3xSpeedActive = !is3xSpeedActive
+        applySpeedToggle()
+        Toast.makeText(
+            this,
+            if (is3xSpeedActive) "Đã bật phát nhanh 3x" else "Đã tắt phát nhanh 3x - trở về 1x",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
-    private fun requestScreenRecord() {
-        // Xin quyền RECORD_AUDIO TRƯỚC (nếu chưa có) rồi mới tới quyền chiếu màn hình - làm
-        // trước để nếu người dùng đồng ý, ScreenRecordService bắt đầu quay đã có audio ngay từ
-        // giây đầu tiên, không phải xin lại giữa chừng (Android chỉ cho xin 1 quyền/lần). Kiểm
-        // tra mỗi lần bấm quay (không chỉ lần đầu) vì người dùng có thể đã thu hồi quyền trong
-        // Cài đặt hệ thống sau khi từng cấp - nếu đã có quyền rồi thì hàm check trả về true ngay,
-        // không hiện lại hộp thoại xin quyền.
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            return
-        }
-        proceedToScreenCapturePermission()
-    }
-
-    private fun proceedToScreenCapturePermission() {
-        if (recordResultData != null) {
-            // Đã có quyền từ trước
-            startScreenRecord()
-        } else {
-            val mpm = getSystemService(MediaProjectionManager::class.java)
-            // SUA LOI (tu dung yeu cau quay UNG DUNG KHAC): tu Android 14 (API 34), goi
-            // createScreenCaptureIntent() KHONG THAM SO se khien he thong hien them 1 buoc
-            // moi cho nguoi dung chon "Toan bo man hinh" hay "Mot ung dung" (dung nhu anh
-            // chup nguoi dung phan anh) - neu nguoi dung lo chon nham 1 app khac (vd Chrome),
-            // MediaProjection se CHi quay app do thay vi quay chinh app nay, khien video
-            // quay ra sai/rong. Tu Android 14 tro len, ep thang ve "quay toan man hinh thiet
-            // bi" bang MediaProjectionConfig.createConfigForDefaultDisplay() de bo qua han
-            // buoc chon ung dung nay, giu nguyen hanh vi quay man hinh nhu truoc.
-            val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                mpm.createScreenCaptureIntent(
-                    android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay()
-                )
-            } else {
-                mpm.createScreenCaptureIntent()
-            }
-            mediaProjectionLauncher.launch(captureIntent)
-        }
-    }
-
-    private fun startScreenRecord() {
-        val data = recordResultData ?: return
-        isRecording = true
-
-        // Phát nhanh (RECORD_SPEED_FACTOR) qua JS - dùng forceSpeed() để đồng bộ với biến
-        // desiredSpeed trong injectSpeedMemory(), tránh vòng lặp tốc độ ở đó kéo ngược lại sau
-        // này (xem giải thích chi tiết tại khai báo window.__ytbrowser_forceSpeed).
-        //
-        // preservesPitch: mặc định thẻ <video> tự "giữ nguyên cao độ" giọng nói/nhạc khi tua
-        // nhanh (chỉ nói nhanh hơn, không đổi giọng) - TRƯỚC ĐÂY từng bị tắt hẳn (preservesPitch
-        // = false) vì ở tốc độ ép rất cao (16x cũ), thuật toán giữ cao độ của WebView/Chromium
-        // xử lý lỗi khiến ÂM THANH CÂM HẲN, nên đành chấp nhận đổi lấy giọng bị đẩy cao độ theo
-        // tốc độ (nghe như "chuột chipmunk") còn hơn mất tiếng. Ở mức 2x (nhẹ hơn nhiều so với
-        // 16x/4x cũ) preservesPitch=true đã chạy ổn định - giữ nguyên bật khi NÂNG LÊN 3x, vì 3x
-        // vẫn còn khá gần 2x (khác hẳn cú nhảy thẳng lên 16x/4x trước đây gây lỗi). Nếu build thử
-        // ở mức 3x này lại gặp câm tiếng/méo giọng, hạ RECORD_SPEED_FACTOR về lại 2x và/hoặc tắt
-        // preservesPitch trở lại (đánh đổi ngược lại như hồi 16x).
+    // Áp dụng (hoặc gỡ) tốc độ 3x lên video hiện tại, đồng thời báo cho lớp "ghi nhớ tốc độ phát"
+    // (injectSpeedMemory bên dưới) biết trạng thái BẬT/TẮT hiện tại qua window.__ytbrowser_sticky3x
+    // - nhờ vậy khi người dùng CHUYỂN SANG VIDEO KHÁC trong lúc đang bật 3x, injectSpeedMemory tự
+    // ép lại đúng 3x cho video mới (xem resetSpeedIfVideoChanged() bên dưới) thay vì tụt về 1x như
+    // hành vi mặc định - giữ nút bấm và tốc độ thật luôn khớp nhau, không cần round-trip JS->Android.
+    private fun applySpeedToggle() {
+        val target = if (is3xSpeedActive) FAST_SPEED_FACTOR else 1
         webView.evaluateJavascript(
             """
             (function(){
                 var v = document.querySelector('video');
                 if (v) {
+                    // preservesPitch: giữ nguyên cao độ giọng nói/nhạc khi tăng tốc (chỉ nói
+                    // nhanh hơn, không bị đẩy cao độ kiểu "chuột chipmunk"). Ở mức 3x mức này đã
+                    // chạy ổn định qua các lần thử trước - nếu sau này lại gặp rè/méo giọng, có
+                    // thể cân nhắc hạ FAST_SPEED_FACTOR xuống 2x và/hoặc tắt preservesPitch.
                     v.preservesPitch = true;
                     v.mozPreservesPitch = true;
                     v.webkitPreservesPitch = true;
                 }
+                window.__ytbrowser_sticky3x = $is3xSpeedActive;
                 if (window.__ytbrowser_forceSpeed) {
-                    window.__ytbrowser_forceSpeed($RECORD_SPEED_FACTOR);
+                    window.__ytbrowser_forceSpeed($target);
                 } else if (v) {
-                    v.playbackRate = $RECORD_SPEED_FACTOR;
+                    v.playbackRate = $target;
                 }
             })();
             """.trimIndent(), null
         )
-
-        // Ẩn thanh tiến độ của YouTube player khi quay - tránh nó xuất hiện trên video được ghi
-        injectHideProgressBar(true)
-
-        // Inject JS theo dõi video pause/end -> điều khiển recorder
-        injectRecordSyncBridge()
-
-        // Khởi động service quay
-        val intent = Intent(this, ScreenRecordService::class.java).apply {
-            action = ScreenRecordService.ACTION_START
-            putExtra(ScreenRecordService.EXTRA_RESULT_CODE, recordResultCode)
-            putExtra(ScreenRecordService.EXTRA_RESULT_DATA, data)
-            putExtra(ScreenRecordService.EXTRA_FILE_INDEX, screenRecordIndex)
-            // Truyen ten video Youtube hien tai (tieu de trang, dang "Ten video - YouTube")
-            // xuong Service de dat ten file theo dung ten video thay vi "y.<so>" - xem
-            // buildOutputPath()/sanitizeVideoTitleForFileName() trong ScreenRecordService.
-            putExtra(ScreenRecordService.EXTRA_VIDEO_TITLE, webView.title)
-        }
-        startForegroundService(intent)
-
-        // THEO YÊU CẦU: không hiện thông báo "Bắt đầu quay..." nữa - thay vào đó ẩn hẳn nút tải
-        // xuống trong lúc đang quay (tự nhiên hơn: nút biến mất = đang quay, nút xuất hiện lại =
-        // quay xong/có thể bấm quay tiếp). Nút được thêm lại trong RecordBridge.onVideoEnded()
-        // khi quay kết thúc TỰ NHIÊN (hết video/đổi video), và không cần thêm lại trong nhánh
-        // dừng quay do người dùng thoát fullscreen ở onHideCustomView() vì lúc đó toàn bộ
-        // fullscreenContainer (kèm nút) đã bị gỡ khỏi màn hình rồi.
-        removeDownloadOverlayButton()
-        screenRecordIndex++
-    }
-
-    // Ẩn (hide=true) hoặc hiện lại (hide=false) thanh tiến độ + controls của YouTube player.
-    // Gọi khi bắt đầu quay để thanh progress không xuất hiện trên video được ghi.
-    // Gọi lại khi dừng quay để trả về giao diện bình thường.
-    private fun injectHideProgressBar(hide: Boolean) {
-        val js = if (hide) """
-            (function() {
-                var id = '__ytbr_rec_style__';
-                var el = document.getElementById(id);
-                if (!el) {
-                    el = document.createElement('style');
-                    el.id = id;
-                    (document.head || document.documentElement).appendChild(el);
-                }
-                el.textContent =
-                    '.ytp-chrome-bottom, .ytp-progress-bar-container, .ytp-chrome-controls,' +
-                    '.ytp-gradient-bottom, .ytp-time-display, .ytp-play-progress,' +
-                    '.ytp-load-progress, .ytp-chapters-container,' +
-                    'ytm-player-overlay-renderer, .slim-video-player-button-view' +
-                    '{ display: none !important; visibility: hidden !important; }';
-            })();
-        """.trimIndent() else """
-            (function() {
-                var el = document.getElementById('__ytbr_rec_style__');
-                if (el) el.textContent = '';
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(js, null)
-    }
-
-    private fun injectRecordSyncBridge() {
-        // SỬA LỖI (quay màn hình không tự dừng khi video kết thúc): bản trước đây chỉ
-        // querySelector('video') + gắn listener 'ended' ĐÚNG 1 LẦN vào ĐÚNG 1 phần tử <video>
-        // tại thời điểm bắt đầu quay, rồi khoá lại bằng cờ window.__ytbrowser_record_sync
-        // (không bao giờ chạy lại). Có 2 tình huống khiến 'ended' không bao giờ bắn tới nữa:
-        //   1) Lúc bắt đầu quay, thẻ <video> chưa kịp render xong (document.querySelector trả
-        //      về null) -> hàm return sớm nhưng cờ đã bị đánh dấu true -> vĩnh viễn không thử
-        //      gắn lại được nữa dù video xuất hiện ngay sau đó.
-        //   2) YouTube thay THẺ <video> khác (quảng cáo giữa video, đổi chất lượng, chuyển
-        //      sang video tiếp theo...) - listener cũ đã gắn vào phần tử bị gỡ bỏ, phần tử
-        //      <video> MỚI (đang phát thật) không hề có listener nào -> sự kiện 'ended' thật
-        //      sự không được ghi nhận -> service quay không bao giờ nhận lệnh STOP.
-        // Cách sửa: dùng đúng pattern đã áp dụng thành công cho bindVideo() ở WakeLockBridge
-        // phía dưới - hàm bindRecordVideo() được gọi lại định kỳ (setInterval) VÀ mỗi khi DOM
-        // thay đổi (MutationObserver), tự tìm <video> hiện tại và chỉ gắn listener nếu phần tử
-        // ĐÓ chưa từng được gắn (cờ __ytbrowser_record_bound đặt TRÊN CHÍNH phần tử video, không
-        // phải trên window) - nhờ vậy nếu <video> bị thay mới, lần bindRecordVideo() kế tiếp
-        // (chậm nhất 1 giây sau, hoặc ngay khi MutationObserver bắt được) sẽ tự gắn lại đúng
-        // phần tử mới, không phụ thuộc video có tồn tại sẵn lúc bắt đầu quay hay không.
-        val js = """
-            (function() {
-                function bindRecordVideo() {
-                    var v = document.querySelector('video');
-                    if (!v) return;
-                    if (v.__ytbrowser_record_bound) return;
-                    v.__ytbrowser_record_bound = true;
-                    v.addEventListener('pause', function() {
-                        if (window.RecordBridge) RecordBridge.onVideoPause();
-                    });
-                    v.addEventListener('play', function() {
-                        if (window.RecordBridge) RecordBridge.onVideoResume();
-                    });
-                    v.addEventListener('ended', function() {
-                        if (window.RecordBridge) RecordBridge.onVideoEnded();
-                    });
-                }
-
-                // SỬA LỖI (quay không dừng khi CHUYỂN sang video khác): sự kiện 'ended' ở trên
-                // chỉ bắn khi video HIỆN TẠI phát hết tự nhiên. Khi người dùng tự bấm sang video
-                // khác (hoặc YouTube tự next mà video cũ bị NGẮT/thay <video> giữa chừng thay vì
-                // phát hết), 'ended' không hề bắn -> onVideoEnded() không bao giờ được gọi ->
-                // service quay tiếp tục chạy nền (lúc này ở 1x vì injectSpeedMemory tự trả tốc độ
-                // về 1x khi thấy URL đổi, nhưng KHÔNG hề báo cho phía quay biết). Dò trực tiếp
-                // đường dẫn/tham số video trong URL (giống cách injectSpeedMemory.getVideoKey()
-                // làm) - mỗi khi thấy đổi khác lần trước, coi như video đã kết thúc phiên quay
-                // hiện tại và gọi ĐÚNG hàm RecordBridge.onVideoEnded() để dừng + lưu + trả tốc độ
-                // giống hệt trường hợp video tự hết.
-                function getRecordVideoKey() {
-                    try {
-                        if (window.location.pathname.indexOf('/shorts/') === 0) {
-                            return window.location.pathname;
-                        }
-                        var v = new URLSearchParams(window.location.search).get('v');
-                        return v || window.location.pathname;
-                    } catch (e) {
-                        return window.location.href;
-                    }
-                }
-
-                // SỬA LỖI (quay không dừng khi AUTOPLAY tự chuyển video): cả 'ended' lẫn dò URL ở
-                // trên đều dựa vào việc YouTube "báo" cho biết video đã đổi - qua sự kiện phát hết
-                // thật sự, hoặc qua URL/history cập nhật. Với luồng autoplay tự chuyển sang video kế
-                // tiếp, nhiều khả năng YouTube tráo thẳng <video> sang nội dung mới "êm" (không có
-                // khoảng ngắt rõ ràng) TRƯỚC KHI video cũ chạm mốc kết thúc thật sự - nên 'ended'
-                // không bắn. Cùng lúc đó, việc cập nhật URL/history cho luồng tự chuyển này cũng có
-                // thể không kịp đồng bộ (chạy sau, hoặc bị debounce) - nên dò URL cũng không bắt kịp
-                // ngay tại thời điểm tráo. Cả 2 lớp trên đều PHỤ THUỘC vào YouTube tự nguyện báo hiệu
-                // đúng lúc, nên không đáng tin cậy cho đúng trường hợp autoplay này.
-                //
-                // Thêm 1 tín hiệu KHÔNG phụ thuộc YouTube: video.duration của thẻ <video> hiện tại.
-                // 2 video khác nhau hầu như chắc chắn có duration khác nhau (kể cả khi URL/API nội
-                // bộ chưa hé lộ gì) - nên so sánh duration đọc được ở lần kiểm tra này với duration
-                // đã lưu ở lần trước; nếu khác nhau đáng kể, coi như video đã đổi.
-                // Lưu ý: chỉ so sánh khi CẢ 2 giá trị (cũ và mới) đều là số hữu hạn (isFinite) - vì
-                // ngay sau khi <video> mới gắn vào DOM, duration thường là NaN hoặc Infinity trong
-                // vài chục/vài trăm ms đầu (chưa tải xong metadata); nếu so sánh lúc đó sẽ luôn ra
-                // "khác" (NaN/Infinity !== số cũ) dù video CHƯA CHẮC đã đổi, gây báo sai. Ngưỡng lệch
-                // 1 giây để tránh sai số làm tròn hiếm gặp giữa các lần đọc bị coi nhầm là đổi video,
-                // trong khi 2 video ngẫu nhiên trùng khớp duration đến dưới 1 giây gần như không xảy ra.
-                function getRecordVideoDuration() {
-                    try {
-                        var v = document.querySelector('video');
-                        if (v && isFinite(v.duration) && v.duration > 0) return v.duration;
-                    } catch (e) {}
-                    return NaN;
-                }
-                if (typeof window.__ytbrowser_record_video_key === 'undefined') {
-                    window.__ytbrowser_record_video_key = getRecordVideoKey();
-                }
-                if (typeof window.__ytbrowser_record_video_duration === 'undefined') {
-                    window.__ytbrowser_record_video_duration = getRecordVideoDuration();
-                }
-                function checkVideoChangedForRecord() {
-                    var changed = false;
-
-                    var key = getRecordVideoKey();
-                    if (key !== window.__ytbrowser_record_video_key) {
-                        window.__ytbrowser_record_video_key = key;
-                        changed = true;
-                    }
-
-                    var duration = getRecordVideoDuration();
-                    if (isFinite(duration)) {
-                        var oldDuration = window.__ytbrowser_record_video_duration;
-                        if (isFinite(oldDuration) && Math.abs(duration - oldDuration) > 1) {
-                            changed = true;
-                        }
-                        // Luôn đồng bộ về giá trị mới nhất đã đọc được (kể cả khi không đổi) để lần
-                        // kiểm tra kế tiếp so sánh đúng với trạng thái hiện tại, không phải trạng thái
-                        // từ rất lâu trước đó.
-                        window.__ytbrowser_record_video_duration = duration;
-                    }
-
-                    if (changed && window.RecordBridge) RecordBridge.onVideoEnded();
-                }
-                bindRecordVideo();
-
-                // Chỉ khởi tạo listener/interval/observer 1 LẦN (dùng cờ toàn cục ở đây là hợp lý
-                // vì đây chỉ là "cơ chế theo dõi", không phải bản thân việc gắn listener) - tránh
-                // startScreenRecord() gọi injectRecordSyncBridge() nhiều lần (quay nhiều đoạn
-                // liên tiếp) tạo ra nhiều listener/interval/observer chồng lên nhau, khiến
-                // checkVideoChangedForRecord() bị gọi lặp lại nhiều lần thừa mỗi khi đổi video.
-                if (!window.__ytbrowser_record_sync) {
-                    window.__ytbrowser_record_sync = true;
-                    document.addEventListener('yt-navigate-finish', checkVideoChangedForRecord);
-                    setInterval(function() {
-                        checkVideoChangedForRecord(); // lớp dự phòng nếu yt-navigate-finish không bắn ra
-                        bindRecordVideo();
-                    }, 1000);
-                    var mo = new MutationObserver(bindRecordVideo);
-                    mo.observe(document.body, { childList: true, subtree: true });
-                }
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(js, null)
-        webView.addJavascriptInterface(RecordBridge(), "RecordBridge")
-    }
-
-    inner class RecordBridge {
-        @JavascriptInterface
-        fun onVideoPause() {
-            if (!isRecording) return
-            startService(Intent(this@MainActivity, ScreenRecordService::class.java).apply {
-                action = ScreenRecordService.ACTION_PAUSE
-            })
-        }
-        @JavascriptInterface
-        fun onVideoResume() {
-            if (!isRecording) return
-            startService(Intent(this@MainActivity, ScreenRecordService::class.java).apply {
-                action = ScreenRecordService.ACTION_RESUME
-            })
-        }
-        @JavascriptInterface
-        fun onVideoEnded() {
-            if (!isRecording) return
-            runOnUiThread {
-                stopScreenRecordingAndReset("Đã lưu video vào Downloads/vdy (đã mã hoá)")
-                // Quay đã dừng - hiện lại nút tải xuống (nếu vẫn đang ở fullscreen) để có thể
-                // bấm quay tiếp, khớp với việc nút đã bị ẩn lúc bắt đầu quay ở startScreenRecord().
-                fullscreenContainer?.let { addDownloadOverlayButton(it) }
-            }
-        }
+        speedToggleButton?.invalidate()
     }
 
     private fun loadBlocklist() {
@@ -787,10 +445,10 @@ class MainActivity : AppCompatActivity() {
                 )
                 webView.visibility = View.GONE
 
-                // Thêm SAU CÙNG (khi fullscreenContainer đã có trong decor) để ô vuông tải xuống
+                // Thêm SAU CÙNG (khi fullscreenContainer đã có trong decor) để ô vuông "3x"
                 // nổi trên cùng, đè cố định lên vị trí nút Cài đặt của trình phát - xem
-                // addDownloadOverlayButton() để biết lý do/cách chỉnh vị trí.
-                fullscreenContainer?.let { addDownloadOverlayButton(it) }
+                // addSpeedToggleButton() để biết lý do/cách chỉnh vị trí.
+                fullscreenContainer?.let { addSpeedToggleButton(it) }
 
                 hideSystemUi()
                 // Cho phép người dùng xoay tự do cả dọc lẫn ngang khi đang xem fullscreen
@@ -798,18 +456,14 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onHideCustomView() {
-                removeDownloadOverlayButton()
+                removeSpeedToggleButton()
                 val decor = window.decorView as ViewGroup
                 fullscreenContainer?.let { decor.removeView(it) }
                 fullscreenContainer = null
                 fullscreenView = null
                 fullscreenCallback?.onCustomViewHidden()
-                // Nếu đang quay thì dừng và reset tốc độ khi thoát fullscreen
-                if (isRecording) {
-                    stopScreenRecordingAndReset(
-                        "Quay dừng — đã lưu video vào Downloads/vdy (đã mã hoá)", toastLong = false
-                    )
-                }
+                // Không còn tính năng quay màn hình nên không cần dừng/reset gì thêm khi thoát
+                // fullscreen - tốc độ phát (nếu đang bật 3x) được giữ nguyên như người dùng chọn.
                 fullscreenCallback = null
 
                 webView.visibility = View.VISIBLE
@@ -1063,64 +717,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
         super.onBackPressed()
-    }
-
-    // Dừng quay "cứng" + dọn trạng thái liên quan - dùng chung cho các trường hợp: video kết
-    // thúc tự nhiên (RecordBridge.onVideoEnded), thoát fullscreen khi đang quay
-    // (onHideCustomView), và rời khỏi app khi đang quay (onUserLeaveHint bên dưới) - tránh lặp
-    // lại cùng 1 đoạn code (gọi ACTION_STOP, trả tốc độ về 1x, hiện lại thanh tiến độ, toast) ở
-    // 3 nơi khác nhau như trước đây.
-    private fun stopScreenRecordingAndReset(toastMessage: String, toastLong: Boolean = true) {
-        if (!isRecording) return
-        isRecording = false
-        startService(Intent(this, ScreenRecordService::class.java).apply {
-            action = ScreenRecordService.ACTION_STOP
-        })
-        webView.evaluateJavascript(
-            """
-            (function(){
-                var v = document.querySelector('video');
-                if (v) {
-                    // Trả lại preservesPitch mặc định (true) khi hết quay - chỉ tắt lúc quay ở
-                    // tốc độ cao để giữ được tiếng (xem startScreenRecord()), phát bình thường
-                    // ở 1x không cần và không nên tắt đặc tính này.
-                    v.preservesPitch = true;
-                    v.mozPreservesPitch = true;
-                    v.webkitPreservesPitch = true;
-                }
-                if (window.__ytbrowser_forceSpeed) {
-                    window.__ytbrowser_forceSpeed(1);
-                } else if (v) {
-                    v.playbackRate = 1;
-                }
-            })();
-            """.trimIndent(), null
-        )
-        injectHideProgressBar(false)
-        Toast.makeText(this, toastMessage, if (toastLong) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
-    }
-
-    // Gọi CHỈ khi NGƯỜI DÙNG chủ động rời app (bấm Home, hoặc mở "Ứng dụng gần đây"/Overview để
-    // chuyển sang app khác) - KHÔNG gọi khi chỉ tắt màn hình (bấm nguồn) hay khi có hộp thoại hệ
-    // thống hiện lên (xin quyền, thông báo...). Đây là lý do dùng onUserLeaveHint() thay vì
-    // onPause()/onStop() - 2 hàm đó còn bị gọi cả trong các trường hợp KHÔNG thực sự rời app
-    // (xem onPause() bên dưới đã có sẵn cơ chế tự pause/resume 450ms để chống việc này làm gián
-    // đoạn phát video), nếu dùng để dừng quay sẽ dừng NHẦM ngay cả khi người dùng không hề rời
-    // app.
-    //
-    // SỬA LỖI: trước đây MediaProjection quay màn hình dùng cờ AUTO_MIRROR để mirror TOÀN BỘ màn
-    // hình vật lý (không riêng WebView) - khi rời app (về Home/mở app khác) mà không dừng quay,
-    // nội dung quay được sẽ bị đổi SANG màn hình chính/app khác thay vì video YouTube, cho tới
-    // lúc quay lại app mới bấm Dừng thủ công được. Giờ tự động "chốt" (dừng + mã hoá) file NGAY
-    // khi phát hiện rời app, để không quay nhầm sang nội dung không liên quan.
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        if (isRecording) {
-            stopScreenRecordingAndReset(
-                "Đã tự dừng quay vì rời khỏi ứng dụng — video đã được lưu vào Downloads/vdy (đã mã hoá)"
-            )
-            fullscreenContainer?.let { addDownloadOverlayButton(it) }
-        }
     }
 
     override fun onPause() {
@@ -1454,21 +1050,23 @@ class MainActivity : AppCompatActivity() {
                 if (window.__ytbrowser_speed_loop) return;
                 window.__ytbrowser_speed_loop = true;
 
+                // Khởi tạo cờ "đang bật 3x" theo đúng trạng thái nút bấm hiện tại phía Android -
+                // chỉ có tác dụng khi JS chạy trong 1 ngữ cảnh trang HOÀN TOÀN MỚI (mở app lần
+                // đầu / tải lại trang thật), vì điều hướng SPA thông thường của YouTube không tạo
+                // lại window nên biến này (nếu đã có) được giữ nguyên qua các lần điều hướng.
+                if (typeof window.__ytbrowser_sticky3x === 'undefined') {
+                    window.__ytbrowser_sticky3x = $is3xSpeedActive;
+                }
+
                 var desiredSpeed = $savedSpeed;
 
                 // SUA LOI (toc do quay bi luu nham thanh toc do phat "binh thuong"): forceSpeed()
-                // ben duoi tu dat video.playbackRate = v de EP toc do luc quay (vd 3x) - nhung
-                // chinh viec gan playbackRate cung TU BAN no lam no 'ratechange' y het nhu khi
-                // NGUOI DUNG tu tay bam doi toc do trong menu YouTube, khong co cach nao phan biet
-                // 2 nguon nay tu ban than su kien. Handler 'ratechange' o duoi (trong watchVideo())
-                // truoc day LUU LUON moi lan doi vao SharedPreferences - nghia la MOI LAN BAT DAU
-                // QUAY, toc do quay (vd 3x) se bi luu nham thanh "toc do phat binh thuong". Binh
-                // thuong khi DUNG quay xong, forceSpeed(1) chay lai se ghi de luu lai dung 1x nen
-                // khong lo ra - NHUNG neu app bi he thong kill/crash NGAY TRONG LUC DANG QUAY (dung
-                // tinh huong ma computeNextRecordIndex() da phai phong o onCreate()), buoc "tra ve
-                // 1x" nay khong bao gio chay toi - SharedPreferences ket lai o gia tri toc do quay
-                // (3x), lan mo app sau moi video se tu dong phat nhanh 3x ma khong ro nguyen nhan,
-                // phai tu tay vao menu YouTube doi lai moi het.
+                // ben duoi tu dat video.playbackRate = v de EP toc do (vd nut "3x") - nhung chinh
+                // viec gan playbackRate cung TU BAN no lam no 'ratechange' y het nhu khi NGUOI
+                // DUNG tu tay bam doi toc do trong menu YouTube, khong co cach nao phan biet 2
+                // nguon nay tu ban than su kien. Handler 'ratechange' o duoi (trong watchVideo())
+                // neu khong loc se LUU LUON moi lan doi vao SharedPreferences - nghia la moi lan
+                // bat nut "3x", toc do ep (3x) se bi luu nham thanh "toc do phat binh thuong".
                 //
                 // Sua bang 1 co danh dau: forceSpeed() BAT co nay truoc khi gan playbackRate, va
                 // handler 'ratechange' KIEM TRA + TU TAT co nay o buoc dau tien - neu co dang bat
@@ -1477,14 +1075,14 @@ class MainActivity : AppCompatActivity() {
                 // duoc luu lai.
                 window.__ytbrowser_forceSpeedInProgress = false;
 
-                // Ham dung chung de Android goi khi can EP tot do (vd: bat/tat quay video 10x) -
+                // Ham dung chung de Android goi khi can EP tot do (vd: bat/tat nut "3x") -
                 // QUAN TRONG: phai cap nhat CA desiredSpeed lan video.playbackRate CUNG LUC, neu
                 // khong vong lap applySpeed() ben duoi (chay moi 1 giay) se phat hien lech va tu
                 // dong keo tot do quay VE LAI gia tri desiredSpeed CU trong <1 giay - day chinh la
-                // ly do truoc day sau khi quay xong video, tot do phat KHONG duoc khoi phuc ve 1x
-                // (Android chi set rieng video.playbackRate=1 ma khong biet gi ve desiredSpeed,
-                // trong khi desiredSpeed dang la 10 tu luc bat dau quay do event 'ratechange' tu
-                // gan cap nhat) - vong lap sau do lai ep nguoc ve 10x.
+                // ly do truoc day sau khi tat 3x, toc do phat KHONG duoc khoi phuc ve 1x (Android
+                // chi set rieng video.playbackRate=1 ma khong biet gi ve desiredSpeed, trong khi
+                // desiredSpeed dang la 3 tu luc bat 3x do event 'ratechange' tu gan cap nhat) -
+                // vong lap sau do lai ep nguoc ve 3.
                 window.__ytbrowser_forceSpeed = function(v) {
                     window.__ytbrowser_forceSpeedInProgress = true;
                     desiredSpeed = v;
@@ -1531,9 +1129,14 @@ class MainActivity : AppCompatActivity() {
                     var key = getVideoKey();
                     if (key !== lastVideoKey) {
                         lastVideoKey = key;
-                        desiredSpeed = 1;
+                        // Nếu đang bật chế độ phát nhanh 3x (nút "3x"), giữ nguyên 3x cho video
+                        // mới thay vì tụt về 1x - đây là điểm khác biệt duy nhất so với hành vi
+                        // "quên tốc độ khi đổi video" mặc định bên dưới (dành cho tốc độ người
+                        // dùng tự chọn trong menu YouTube, không liên quan tới nút "3x").
+                        var target = window.__ytbrowser_sticky3x ? $FAST_SPEED_FACTOR : 1;
+                        desiredSpeed = target;
                         var video = document.querySelector('video');
-                        if (video) video.playbackRate = 1;
+                        if (video) video.playbackRate = target;
                     }
                 }
 

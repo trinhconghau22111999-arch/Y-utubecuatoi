@@ -3,6 +3,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Dùng cho tìm kiếm bằng giọng nói (xem VoiceBridge trong MainActivity.kt) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Giữ CPU không ngủ khi màn hình tắt trong lúc đang phát video/nhạc - xem WakeLockBridge
          trong MainActivity.kt. Không giữ SÁNG màn hình (không dùng FLAG_KEEP_SCREEN_ON) - màn
@@ -20,9 +21,6 @@
          ưu hoá pin" - nhiều hãng (Xiaomi/Oppo/Vivo...) vẫn có thể kill app dù đã có Foreground
          Service nếu app không nằm trong whitelist pin này. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!-- Cần khai báo để app có thể "nhìn thấy" và gọi được activity nhận dạng
          giọng nói của hệ thống trên Android 11+ (package visibility). -->
@@ -59,9 +57,5 @@
             android:foregroundServiceType="mediaPlayback">
 
         </service>
-        <service
-            android:name=".ScreenRecordService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>
