@@ -21,8 +21,18 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+      - name: Configure Android SDK (dùng SDK có sẵn trên runner, không phụ thuộc action ngoài)
+        # Runner ubuntu-latest của GitHub đã cài sẵn Android SDK đầy đủ (bao gồm cả platform 34
+        # cho compileSdk 34 của project này) tại $ANDROID_SDK_ROOT - trước đây dùng action
+        # android-actions/setup-android để "thiết lập" lại nhưng chính action đó liên tục lỗi ở
+        # bước này (không rõ lý do cụ thể, log chi tiết cũng không có annotation lỗi) dù đã thử
+        # nâng cả 2 phiên bản (v3 rồi v4). Bỏ hẳn phụ thuộc vào action ngoài đó - chỉ cần chấp
+        # nhận license + đảm bảo đúng platform/build-tools cần dùng đã có, dùng thẳng sdkmanager
+        # đã có sẵn trong SDK của runner.
+        run: |
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Build debug APK
         env:
