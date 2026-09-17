@@ -27,7 +27,9 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import android.speech.RecognizerIntent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -72,14 +74,15 @@ class MainActivity : AppCompatActivity() {
     // phát tiếp" - xác suất trúng khoảng hở đó khác nhau mỗi lần, không phải lần nào cũng dính.
     private var isAutoPausing = false
 
-    // --- Bật/tắt phát nhanh 3x (thay cho tính năng quay màn hình đã bỏ) ---
+    // --- Bật/tắt phát nhanh 2x/3x (thay cho tính năng quay màn hình đã bỏ) ---
     // Trước đây ô vuông nổi trên trình phát dùng để bắt đầu QUAY màn hình (ép tốc độ 3x trong
     // lúc quay để rút ngắn thời gian, rồi mã hoá + lưu file vào Downloads/vdy). Theo yêu cầu, bỏ
     // hẳn toàn bộ luồng quay/lưu/mã hoá đó (ScreenRecordService, VideoCrypto, quyền chiếu màn
-    // hình, quyền ghi bộ nhớ ngoài...) - CHỈ giữ lại phần "phát nhanh 3x", giờ là 1 nút bật/tắt
-    // đơn giản: bấm 1 lần để phát ở 3x, bấm lại để trở về 1x. Không còn quay/lưu file gì cả.
-    private var is3xSpeedActive = false
-    private val FAST_SPEED_FACTOR = 3
+    // hình, quyền ghi bộ nhớ ngoài...) - CHỈ giữ lại phần "phát nhanh", giờ là 1 cụm 2 nút "3x" và
+    // "2x" dùng chung 1 nền đen. Chỉ 1 trong 2 tốc độ được bật cùng lúc: bấm nút đang TẮT để bật
+    // (và tự tắt nút kia nếu đang bật), bấm lại đúng nút đang BẬT để trở về tốc độ bình thường 1x.
+    // activeSpeedFactor: 1 = đang phát bình thường (không nút nào bật), 2 hoặc 3 = đang bật 2x/3x.
+    private var activeSpeedFactor = 1
 
     // --- Hỗ trợ fullscreen cho video HTML5 (nút phóng to trong trình phát YouTube) ---
     private var fullscreenContainer: FrameLayout? = null
@@ -133,13 +136,15 @@ class MainActivity : AppCompatActivity() {
 
     private val START_URL = "https://m.youtube.com/"
 
-    // Vị trí/kích thước ô vuông "3x" (xem addSpeedToggleButton) - chỉnh 3 số này (dp)
-    // nếu ô vuông chưa đè khớp lên đúng vị trí nút Cài đặt thật trên máy đang dùng.
+    // Vị trí/kích thước cụm nút "3x"/"2x" (xem addSpeedToggleButton) - chỉnh các số này (dp)
+    // nếu cụm chưa nằm ngang hàng với các nút khác của trình phát trên máy thật.
     private val SPEED_BTN_SIZE_DP = 44
-    private val SPEED_BTN_TOP_DP = 8
+    // NÂNG lên cho ngang hàng với các nút khác của trình phát ở cùng hàng bên trái (trước đây là
+    // 8dp - nằm thấp hơn 1 chút so với các nút đó).
+    private val SPEED_BTN_TOP_DP = 2
     private val SPEED_BTN_RIGHT_DP = 48
-    // Dịch nút sang PHẢI thêm 1 khoảng bằng đúng 1/2 chiều ngang của icon - trừ bớt vào lề phải
-    // gốc (rightMargin nhỏ hơn = nằm gần mép phải hơn = dịch sang phải). Xem cách dùng ở
+    // Dịch cả cụm sang PHẢI thêm 1 khoảng bằng đúng 1/2 chiều ngang của 1 ô vuông - trừ bớt vào lề
+    // phải gốc (rightMargin nhỏ hơn = nằm gần mép phải hơn = dịch sang phải). Xem cách dùng ở
     // addSpeedToggleButton() bên dưới.
     private val SPEED_BTN_RIGHT_SHIFT_DP = SPEED_BTN_SIZE_DP / 2
 
@@ -159,106 +164,115 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl(START_URL)
     }
 
-    // ---- Ô vuông "3x" bật/tắt phát nhanh, đè cố định lên vị trí nút Cài đặt của trình phát khi
-    // toàn màn hình (thay cho ô vuông "tải xuống/quay màn hình" đã bỏ theo yêu cầu) ----
+    // ---- Cụm 2 nút "3x"/"2x" bật/tắt phát nhanh, chung 1 nền đen, đè cố định lên vị trí nút Cài
+    // đặt của trình phát khi toàn màn hình (thay cho ô vuông "tải xuống/quay màn hình" đã bỏ) ----
     // Trước đây ô vuông này dùng để bắt đầu QUAY màn hình (xin quyền chiếu màn hình + micro, ép
     // tốc độ 3x, mã hoá + lưu file vào Downloads/vdy). Toàn bộ luồng quay/lưu/mã hoá đó đã bị bỏ -
-    // giờ ô vuông chỉ đơn giản là 1 công tắc BẬT/TẮT phát nhanh 3x: bấm 1 lần để phát ở 3x (chữ
-    // "3x" đổi màu để báo đang bật), bấm lại để trở về 1x. Không quay/lưu file gì cả.
+    // giờ là cụm 2 công tắc BẬT/TẮT phát nhanh 3x và 2x nằm chung 1 khối nền đen (nút "3x" bên
+    // trái, "2x" bên phải, đúng như thiết kế cũ trước khi thêm 2x): bấm nút đang tắt để bật (chữ
+    // đổi màu cam), tự tắt nút kia nếu đang bật; bấm lại đúng nút đang bật để trở về 1x.
     // Vẫn giữ đúng vị trí đè lên nút Cài đặt (gear) của trình phát YouTube như thiết kế cũ, vì lý
     // do đó vẫn còn nguyên: chặn không cho mở nhầm menu Cài đặt không dùng được trong app này.
     //
     // LƯU Ý VỊ TRÍ: toạ độ nút Cài đặt của YouTube không cố định tuyệt đối giữa các máy/khổ màn
     // hình (phụ thuộc mật độ điểm ảnh, có thanh cắt tai thỏ hay không...), nên SPEED_BTN_TOP_DP
-    // và SPEED_BTN_RIGHT_DP dưới đây là ước lượng ban đầu - nếu ô vuông chưa đè khớp hẳn lên
-    // nút Cài đặt trên máy thật, chỉ cần chỉnh 2 số này (đơn vị dp) rồi build lại.
-    private var speedToggleButton: View? = null
+    // và SPEED_BTN_RIGHT_DP dưới đây là ước lượng ban đầu - nếu cụm nút chưa nằm ngang hàng/đè
+    // khớp hẳn lên vị trí mong muốn trên máy thật, chỉ cần chỉnh 2 số này (đơn vị dp) rồi build lại.
+    private var speedToggleGroup: LinearLayout? = null
+    private var speed3xLabel: TextView? = null
+    private var speed2xLabel: TextView? = null
 
     private fun addSpeedToggleButton(container: FrameLayout) {
-        if (speedToggleButton != null) return
+        if (speedToggleGroup != null) return
         val density = resources.displayMetrics.density
         val sizePx = (SPEED_BTN_SIZE_DP * density).toInt()
-        val btn = object : View(this) {
-            // Vẽ chữ "3x" - màu đổi theo trạng thái bật/tắt (is3xSpeedActive) để người dùng biết
-            // ngay đang phát nhanh hay đang phát bình thường mà không cần chữ giải thích thêm.
-            override fun onDraw(canvas: Canvas) {
-                super.onDraw(canvas)
-                val w = width.toFloat()
-                val h = height.toFloat()
-                if (w <= 0f || h <= 0f) return
 
-                // Cam khi đang BẬT 3x (dễ nhận ra là "đang khác bình thường"), xanh lá khi đang TẮT
-                // (giữ tông màu quen thuộc với icon cũ) - đổi màu là cách báo trạng thái duy nhất,
-                // không cần thêm chữ/icon phụ nào khác.
-                val activeColor = Color.parseColor("#FF9800")
-                val inactiveColor = Color.parseColor("#4CAF50")
+        // Màu chữ dùng chung cho cả 2 nút: cam khi nút đó đang BẬT, xanh lá khi đang TẮT - đổi
+        // màu là cách báo trạng thái duy nhất, không cần thêm chữ/icon phụ nào khác.
+        val activeColor = Color.parseColor("#FF9800")
+        val inactiveColor = Color.parseColor("#4CAF50")
 
-                val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = if (is3xSpeedActive) activeColor else inactiveColor
-                    textAlign = Paint.Align.CENTER
-                    textSize = h * 0.42f
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                }
-                val label = "3x"
-                // Căn chữ theo đúng tâm dọc của view (không dùng baseline mặc định, vì baseline
-                // canh theo mép trên chữ chứ không phải tâm hình học của nó).
-                val textY = h / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
-                canvas.drawText(label, w / 2f, textY, textPaint)
+        fun makeSpeedLabel(text: String, factor: Int): TextView {
+            return TextView(this).apply {
+                this.text = text
+                gravity = android.view.Gravity.CENTER
+                setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+                textSize = 15f // sp
+                setTextColor(if (activeSpeedFactor == factor) activeColor else inactiveColor)
+                layoutParams = LinearLayout.LayoutParams(sizePx, sizePx)
+                contentDescription = "Bật/tắt phát nhanh ${factor}x"
+                setOnClickListener { onSpeedButtonTapped(factor) }
             }
-        }.apply {
-            // Nền ĐEN (giữ nguyên như thiết kế cũ) - dễ nhận ra hơn, tương phản tốt với chữ.
-            setBackgroundColor(Color.BLACK)
-            setWillNotDraw(false) // bắt buộc: View trơn mặc định bỏ qua onDraw() để tối ưu
-            contentDescription = "Bật/tắt phát nhanh 3x"
-            setOnClickListener { onSpeedButtonTapped() }
         }
-        val params = FrameLayout.LayoutParams(sizePx, sizePx).apply {
+
+        val label3x = makeSpeedLabel("3x", 3)
+        val label2x = makeSpeedLabel("2x", 2)
+        val group = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            // Nền ĐEN chung cho cả cụm (giữ nguyên tông màu như thiết kế cũ) - dễ nhận ra hơn,
+            // tương phản tốt với chữ, và khiến 2 nút trông liền thành 1 khối duy nhất.
+            setBackgroundColor(Color.BLACK)
+            addView(label3x)
+            addView(label2x)
+        }
+
+        val params = FrameLayout.LayoutParams(sizePx * 2, sizePx).apply {
             gravity = android.view.Gravity.TOP or android.view.Gravity.END
             topMargin = (SPEED_BTN_TOP_DP * density).toInt()
-            // Dịch sang phải thêm 1/2 chiều ngang icon so với vị trí gốc (xem
-            // SPEED_BTN_RIGHT_SHIFT_DP) - rightMargin nhỏ hơn nghĩa là nằm gần mép phải hơn.
+            // Dịch cả cụm sang phải thêm 1/2 chiều ngang 1 ô vuông so với vị trí gốc (xem
+            // SPEED_BTN_RIGHT_SHIFT_DP) - rightMargin nhỏ hơn nghĩa là nằm gần mép phải hơn. Giữ
+            // NGUYÊN mép phải như khi chỉ có 1 nút "3x" trước đây - cụm mở rộng thêm sang TRÁI để
+            // chứa nút "2x" mới, đúng yêu cầu "2x nằm bên phải nút 3x hiện tại".
             rightMargin = ((SPEED_BTN_RIGHT_DP - SPEED_BTN_RIGHT_SHIFT_DP) * density).toInt()
         }
-        container.addView(btn, params) // thêm SAU CÙNG -> nổi trên cùng, đè lên video/nút cài đặt bên dưới
-        speedToggleButton = btn
+        container.addView(group, params) // thêm SAU CÙNG -> nổi trên cùng, đè lên video/nút cài đặt bên dưới
+        speedToggleGroup = group
+        speed3xLabel = label3x
+        speed2xLabel = label2x
     }
 
     private fun removeSpeedToggleButton() {
-        speedToggleButton?.let { (it.parent as? ViewGroup)?.removeView(it) }
-        speedToggleButton = null
+        speedToggleGroup?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        speedToggleGroup = null
+        speed3xLabel = null
+        speed2xLabel = null
     }
 
-    private fun onSpeedButtonTapped() {
-        is3xSpeedActive = !is3xSpeedActive
+    private fun onSpeedButtonTapped(factor: Int) {
+        // Bấm đúng nút đang bật -> tắt, trở về 1x. Bấm nút còn lại (dù đang ở 1x hay đang bật nút
+        // kia) -> chuyển hẳn sang tốc độ vừa bấm.
+        activeSpeedFactor = if (activeSpeedFactor == factor) 1 else factor
         applySpeedToggle()
         Toast.makeText(
             this,
-            if (is3xSpeedActive) "Đã bật phát nhanh 3x" else "Đã tắt phát nhanh 3x - trở về 1x",
+            if (activeSpeedFactor == 1) "Đã tắt phát nhanh - trở về 1x"
+            else "Đã bật phát nhanh ${activeSpeedFactor}x",
             Toast.LENGTH_SHORT
         ).show()
     }
 
-    // Áp dụng (hoặc gỡ) tốc độ 3x lên video hiện tại, đồng thời báo cho lớp "ghi nhớ tốc độ phát"
-    // (injectSpeedMemory bên dưới) biết trạng thái BẬT/TẮT hiện tại qua window.__ytbrowser_sticky3x
-    // - nhờ vậy khi người dùng CHUYỂN SANG VIDEO KHÁC trong lúc đang bật 3x, injectSpeedMemory tự
-    // ép lại đúng 3x cho video mới (xem resetSpeedIfVideoChanged() bên dưới) thay vì tụt về 1x như
-    // hành vi mặc định - giữ nút bấm và tốc độ thật luôn khớp nhau, không cần round-trip JS->Android.
+    // Áp dụng (hoặc gỡ) tốc độ phát nhanh lên video hiện tại, đồng thời báo cho lớp "ghi nhớ tốc
+    // độ phát" (injectSpeedMemory bên dưới) biết tốc độ đang bật qua window.__ytbrowser_stickySpeed
+    // - nhờ vậy khi người dùng CHUYỂN SANG VIDEO KHÁC trong lúc đang bật 2x/3x, injectSpeedMemory
+    // tự ép lại đúng tốc độ đó cho video mới (xem resetSpeedIfVideoChanged() bên dưới) thay vì tụt
+    // về 1x như hành vi mặc định - giữ nút bấm và tốc độ thật luôn khớp nhau, không cần round-trip
+    // JS->Android.
     private fun applySpeedToggle() {
-        val target = if (is3xSpeedActive) FAST_SPEED_FACTOR else 1
+        val target = activeSpeedFactor
         webView.evaluateJavascript(
             """
             (function(){
                 var v = document.querySelector('video');
                 if (v) {
                     // preservesPitch: giữ nguyên cao độ giọng nói/nhạc khi tăng tốc (chỉ nói
-                    // nhanh hơn, không bị đẩy cao độ kiểu "chuột chipmunk"). Ở mức 3x mức này đã
-                    // chạy ổn định qua các lần thử trước - nếu sau này lại gặp rè/méo giọng, có
-                    // thể cân nhắc hạ FAST_SPEED_FACTOR xuống 2x và/hoặc tắt preservesPitch.
+                    // nhanh hơn, không bị đẩy cao độ kiểu "chuột chipmunk"). Ở mức 2x/3x mức này
+                    // đã chạy ổn định qua các lần thử trước - nếu sau này lại gặp rè/méo giọng, có
+                    // thể cân nhắc tắt preservesPitch.
                     v.preservesPitch = true;
                     v.mozPreservesPitch = true;
                     v.webkitPreservesPitch = true;
                 }
-                window.__ytbrowser_sticky3x = $is3xSpeedActive;
+                window.__ytbrowser_stickySpeed = $target;
                 if (window.__ytbrowser_forceSpeed) {
                     window.__ytbrowser_forceSpeed($target);
                 } else if (v) {
@@ -267,7 +281,14 @@ class MainActivity : AppCompatActivity() {
             })();
             """.trimIndent(), null
         )
-        speedToggleButton?.invalidate()
+        // Cập nhật lại màu chữ của CẢ 2 nút cho khớp trạng thái mới (chỉ đúng 1 trong 2 - hoặc
+        // không nút nào - có màu cam tại 1 thời điểm).
+        speed3xLabel?.setTextColor(
+            if (activeSpeedFactor == 3) Color.parseColor("#FF9800") else Color.parseColor("#4CAF50")
+        )
+        speed2xLabel?.setTextColor(
+            if (activeSpeedFactor == 2) Color.parseColor("#FF9800") else Color.parseColor("#4CAF50")
+        )
     }
 
     private fun loadBlocklist() {
@@ -1050,12 +1071,13 @@ class MainActivity : AppCompatActivity() {
                 if (window.__ytbrowser_speed_loop) return;
                 window.__ytbrowser_speed_loop = true;
 
-                // Khởi tạo cờ "đang bật 3x" theo đúng trạng thái nút bấm hiện tại phía Android -
-                // chỉ có tác dụng khi JS chạy trong 1 ngữ cảnh trang HOÀN TOÀN MỚI (mở app lần
-                // đầu / tải lại trang thật), vì điều hướng SPA thông thường của YouTube không tạo
-                // lại window nên biến này (nếu đã có) được giữ nguyên qua các lần điều hướng.
-                if (typeof window.__ytbrowser_sticky3x === 'undefined') {
-                    window.__ytbrowser_sticky3x = $is3xSpeedActive;
+                // Khởi tạo tốc độ "đang bật" theo đúng trạng thái cụm nút 3x/2x hiện tại phía
+                // Android - chỉ có tác dụng khi JS chạy trong 1 ngữ cảnh trang HOÀN TOÀN MỚI (mở
+                // app lần đầu / tải lại trang thật), vì điều hướng SPA thông thường của YouTube
+                // không tạo lại window nên biến này (nếu đã có) được giữ nguyên qua các lần điều
+                // hướng. Giá trị: 1 = bình thường (không nút nào bật), 2 hoặc 3 = đang bật 2x/3x.
+                if (typeof window.__ytbrowser_stickySpeed === 'undefined') {
+                    window.__ytbrowser_stickySpeed = $activeSpeedFactor;
                 }
 
                 var desiredSpeed = $savedSpeed;
@@ -1129,11 +1151,11 @@ class MainActivity : AppCompatActivity() {
                     var key = getVideoKey();
                     if (key !== lastVideoKey) {
                         lastVideoKey = key;
-                        // Nếu đang bật chế độ phát nhanh 3x (nút "3x"), giữ nguyên 3x cho video
-                        // mới thay vì tụt về 1x - đây là điểm khác biệt duy nhất so với hành vi
-                        // "quên tốc độ khi đổi video" mặc định bên dưới (dành cho tốc độ người
-                        // dùng tự chọn trong menu YouTube, không liên quan tới nút "3x").
-                        var target = window.__ytbrowser_sticky3x ? $FAST_SPEED_FACTOR : 1;
+                        // Nếu đang bật chế độ phát nhanh (2x hoặc 3x), giữ nguyên đúng tốc độ đó
+                        // cho video mới thay vì tụt về 1x - đây là điểm khác biệt duy nhất so với
+                        // hành vi "quên tốc độ khi đổi video" mặc định bên dưới (dành cho tốc độ
+                        // người dùng tự chọn trong menu YouTube, không liên quan tới cụm nút 3x/2x).
+                        var target = window.__ytbrowser_stickySpeed || 1;
                         desiredSpeed = target;
                         var video = document.querySelector('video');
                         if (video) video.playbackRate = target;
