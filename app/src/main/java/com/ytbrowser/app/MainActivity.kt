@@ -161,7 +161,16 @@ class MainActivity : AppCompatActivity() {
         loadBlocklist()
         setupWebView()
 
-        webView.loadUrl(START_URL)
+        // Nhận từ khóa từ app Nokia (AI giọng nói): extra "search_query" -> mở thẳng trang kết quả tìm kiếm
+        val q = intent?.getStringExtra("search_query")
+        if (!q.isNullOrBlank()) performYoutubeSearch(q) else webView.loadUrl(START_URL)
+    }
+
+    // App đang mở sẵn (launchMode singleTask) mà Nokia gọi lại kèm từ khóa mới -> tìm luôn
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra("search_query")?.takeIf { it.isNotBlank() }?.let { performYoutubeSearch(it) }
     }
 
     // ---- Cụm 2 nút "3x"/"2x" bật/tắt phát nhanh, chung 1 nền đen, đè cố định lên vị trí nút Cài
