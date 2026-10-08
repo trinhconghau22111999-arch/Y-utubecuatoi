@@ -27,6 +27,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -78,11 +79,16 @@ class MainActivity : AppCompatActivity() {
     // Trước đây ô vuông nổi trên trình phát dùng để bắt đầu QUAY màn hình (ép tốc độ 3x trong
     // lúc quay để rút ngắn thời gian, rồi mã hoá + lưu file vào Downloads/vdy). Theo yêu cầu, bỏ
     // hẳn toàn bộ luồng quay/lưu/mã hoá đó (ScreenRecordService, VideoCrypto, quyền chiếu màn
-    // hình, quyền ghi bộ nhớ ngoài...) - CHỈ giữ lại phần "phát nhanh", giờ là 1 cụm 2 nút "3x" và
+    // hình, quyền ghi bộ nhớ ngoài...) - CHỈ giữ lại phần "phát nhanh", giờ là 1 cụm 2 nút "chỉ ngang" và
     // "2x" dùng chung 1 nền đen. Chỉ 1 trong 2 tốc độ được bật cùng lúc: bấm nút đang TẮT để bật
     // (và tự tắt nút kia nếu đang bật), bấm lại đúng nút đang BẬT để trở về tốc độ bình thường 1x.
     // activeSpeedFactor: 1 = đang phát bình thường (không nút nào bật), 2 hoặc 3 = đang bật 2x/3x.
     private var activeSpeedFactor = 1
+
+    // --- Nút "chỉ ngang" (thay cho nút 3x cũ) ---
+    // true = khoá ở màn hình ngang khi xem fullscreen (máy có xoay dọc cũng KHÔNG tự chuyển sang
+    // dọc, vẫn cho lật 2 chiều ngang trái/phải). false = xoay tự do như cũ. Được nhớ trong prefs.
+    private var landscapeLocked = false
 
     // --- Hỗ trợ fullscreen cho video HTML5 (nút phóng to trong trình phát YouTube) ---
     private var fullscreenContainer: FrameLayout? = null
@@ -154,6 +160,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         prefs = getSharedPreferences("ytbrowser_prefs", Context.MODE_PRIVATE)
+        landscapeLocked = prefs.getBoolean("landscape_lock", false)
 
         webView = findViewById(R.id.webview)
         progressBar = findViewById(R.id.progressBar)
@@ -188,7 +195,7 @@ class MainActivity : AppCompatActivity() {
     // và SPEED_BTN_RIGHT_DP dưới đây là ước lượng ban đầu - nếu cụm nút chưa nằm ngang hàng/đè
     // khớp hẳn lên vị trí mong muốn trên máy thật, chỉ cần chỉnh 2 số này (đơn vị dp) rồi build lại.
     private var speedToggleGroup: LinearLayout? = null
-    private var speed3xLabel: TextView? = null
+    private var landscapeBtn: ImageView? = null
     private var speed2xLabel: TextView? = null
 
     private fun addSpeedToggleButton(container: FrameLayout) {
@@ -214,14 +221,24 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val label3x = makeSpeedLabel("3x", 3)
+        // Nút "chỉ ngang": icon điện thoại nằm ngang, cam khi đang khoá ngang, xanh khi đang tắt.
+        val btnLandscape = ImageView(this).apply {
+            setImageResource(R.drawable.ic_landscape_lock)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            val pad = (10 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+            setColorFilter(if (landscapeLocked) activeColor else inactiveColor)
+            layoutParams = LinearLayout.LayoutParams(sizePx, sizePx)
+            contentDescription = "Khoá màn hình ngang"
+            setOnClickListener { onLandscapeButtonTapped() }
+        }
         val label2x = makeSpeedLabel("2x", 2)
         val group = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             // Nền ĐEN chung cho cả cụm (giữ nguyên tông màu như thiết kế cũ) - dễ nhận ra hơn,
             // tương phản tốt với chữ, và khiến 2 nút trông liền thành 1 khối duy nhất.
             setBackgroundColor(Color.BLACK)
-            addView(label3x)
+            addView(btnLandscape)
             addView(label2x)
         }
 
@@ -236,14 +253,14 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(group, params) // thêm SAU CÙNG -> nổi trên cùng, đè lên video/nút cài đặt bên dưới
         speedToggleGroup = group
-        speed3xLabel = label3x
+        landscapeBtn = btnLandscape
         speed2xLabel = label2x
     }
 
     private fun removeSpeedToggleButton() {
         speedToggleGroup?.let { (it.parent as? ViewGroup)?.removeView(it) }
         speedToggleGroup = null
-        speed3xLabel = null
+        landscapeBtn = null
         speed2xLabel = null
     }
 
@@ -256,6 +273,29 @@ class MainActivity : AppCompatActivity() {
             this,
             if (activeSpeedFactor == 1) "Đã tắt phát nhanh - trở về 1x"
             else "Đã bật phát nhanh ${activeSpeedFactor}x",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    // Bật/tắt khoá màn hình ngang khi đang xem fullscreen. SENSOR_LANDSCAPE: luôn ở chế độ ngang
+    // (không bao giờ tự xoay sang dọc), nhưng vẫn lật được giữa 2 chiều ngang theo cảm biến.
+    private fun applyFullscreenOrientation() {
+        requestedOrientation = if (landscapeLocked)
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        else
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR
+    }
+
+    private fun onLandscapeButtonTapped() {
+        landscapeLocked = !landscapeLocked
+        prefs.edit().putBoolean("landscape_lock", landscapeLocked).apply()
+        applyFullscreenOrientation()
+        landscapeBtn?.setColorFilter(
+            if (landscapeLocked) Color.parseColor("#FF9800") else Color.parseColor("#4CAF50")
+        )
+        Toast.makeText(
+            this,
+            if (landscapeLocked) "Đã khoá màn hình ngang" else "Đã mở khoá - xoay tự do",
             Toast.LENGTH_SHORT
         ).show()
     }
@@ -292,9 +332,6 @@ class MainActivity : AppCompatActivity() {
         )
         // Cập nhật lại màu chữ của CẢ 2 nút cho khớp trạng thái mới (chỉ đúng 1 trong 2 - hoặc
         // không nút nào - có màu cam tại 1 thời điểm).
-        speed3xLabel?.setTextColor(
-            if (activeSpeedFactor == 3) Color.parseColor("#FF9800") else Color.parseColor("#4CAF50")
-        )
         speed2xLabel?.setTextColor(
             if (activeSpeedFactor == 2) Color.parseColor("#FF9800") else Color.parseColor("#4CAF50")
         )
@@ -481,8 +518,9 @@ class MainActivity : AppCompatActivity() {
                 fullscreenContainer?.let { addSpeedToggleButton(it) }
 
                 hideSystemUi()
-                // Cho phép người dùng xoay tự do cả dọc lẫn ngang khi đang xem fullscreen
-                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                // Mặc định xoay tự do cả dọc lẫn ngang; nếu người dùng đã bật nút "chỉ ngang"
+                // thì khoá ở màn hình ngang (xem applyFullscreenOrientation).
+                applyFullscreenOrientation()
             }
 
             override fun onHideCustomView() {
