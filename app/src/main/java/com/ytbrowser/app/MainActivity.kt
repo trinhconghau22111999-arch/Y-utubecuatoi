@@ -1609,7 +1609,15 @@ class MainActivity : AppCompatActivity() {
                 // nhiều máy, đặc biệt các hãng có trình quản lý pin riêng).
                 if (!playbackServiceRunning) {
                     playbackServiceRunning = true
-                    startForegroundService(Intent(this@MainActivity, PlaybackService::class.java))
+                    // startForegroundService() chỉ có từ Android 8.0 (API 26) - gọi thẳng trên
+                    // Android 7.1.1 (API 25) gây NoSuchMethodError làm VĂNG app ngay khi video bắt
+                    // đầu phát. Android < 8 dùng startService() là đủ.
+                    val svc = Intent(this@MainActivity, PlaybackService::class.java)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(svc)
+                    } else {
+                        startService(svc)
+                    }
                 }
             }
         }
